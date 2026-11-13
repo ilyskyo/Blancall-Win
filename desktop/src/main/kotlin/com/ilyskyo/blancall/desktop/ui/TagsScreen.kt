@@ -313,11 +313,25 @@ fun TagHomeScreen(state: AppState, tagId: Long) {
 
         items(tagged, key = { it.id }) { article ->
             SectionCard(modifier = Modifier.widthIn(max = 1000.dp)) {
-                ArticleRow(
-                    article = article,
-                    onOpen = { state.navigate(Screen.Reader(article.id)) },
-                    onPractice = { state.navigate(Screen.Practice(article.id)) },
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(article.title, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            buildString {
+                                append("${article.content.length} 字")
+                                if (article.author.isNotBlank()) append(" · ${article.author}")
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    OutlinedButton(onClick = { state.navigate(Screen.Reader(article.id)) }) { Text("阅读") }
+                    Button(onClick = { state.navigate(Screen.Practice(article.id)) }) { Text("练习") }
+                }
             }
         }
         item { Spacer(Modifier.padding(bottom = 32.dp)) }

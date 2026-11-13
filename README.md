@@ -36,17 +36,27 @@
 
 - Windows 10 / Windows 11，**x64**；无需管理员权限。
 - 未验证：Windows 7 / 8.1、ARM64、Windows Server、远程桌面 / 多用户会话。
-- 磁盘：完整版解压约 450 MB（含手写模型），精简版不含 `models/`。
+- 磁盘：标准版解压约 430 MB（含 ncnn 与拉丁模型）；安装中文手写模型后约 450 MB。
 
 ## 安装
 
-### 便携版（推荐）
+### EXE 安装包（推荐）
+
+下载 `Blancall-7.6.1-win-x64-setup.exe`（约 117 MB），双击按向导安装：
+
+- 当前用户安装，无需管理员权限；默认目录 `%LOCALAPPDATA%\Programs\Blancall`
+- 可选桌面快捷方式，创建开始菜单项，并在「设置 → 应用 → 已安装的应用」注册卸载入口
+- 卸载只删除程序目录与快捷方式，**不会删除** `%LOCALAPPDATA%\Blancall` 学习数据
+- 未做代码签名，SmartScreen 可能提示「未知发布者」（见「关于代码签名」）
+- 与便携包一样**不含中文手写模型**，需要时按下一节单独安装
+
+### 便携版
 
 从 [Releases](https://github.com/ilyskyo/Blancall-Win/releases)（或本地 `dist/`）解压 ZIP 后双击 `Blancall.vbs`：
 
 ```text
-dist\Blancall-7.6.1-win-x64-portable.zip        约 120 MB（含 ncnn 与拉丁模型，不含中文手写模型）
-dist\Blancall-7.6.1-win-x64-portable-lite.zip   约 115 MB（不含 models/，手写入口全部隐藏）
+dist\Blancall-7.6.1-win-x64-portable.zip        约 123 MB（含 ncnn 与拉丁模型，不含中文手写模型）
+dist\Blancall-7.6.1-win-x64-portable-lite.zip   约 116 MB（不含 models/，手写入口全部隐藏）
 ```
 
 ### 中文手写模型（单独下载）
@@ -59,7 +69,7 @@ dist\Blancall-7.6.1-win-x64-portable-lite.zip   约 115 MB（不含 models/，�
 
 用户级安装的根目录为 `%LOCALAPPDATA%\Programs\Blancall\`。未安装中文模型时，中文手写入口自动隐藏，键盘与拉丁手写不受影响。
 
-### 安装到当前用户（无需管理员）
+### 手动安装到当前用户（无需管理员）
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\install-portable.ps1 -FromZip dist\Blancall-7.6.1-win-x64-portable.zip
@@ -89,7 +99,17 @@ powershell -ExecutionPolicy Bypass -File tools\package-windows.ps1
 powershell -ExecutionPolicy Bypass -File tools\package-windows.ps1 -ModelDir D:\path\to\handwriting-pack
 ```
 
-脚本依次执行测试 → `uberJar` → `jlink` → 组装 app image → 生成标准 / 精简 ZIP，并在末尾尝试 `jpackage` MSI（当前环境无法完成，见「已知限制」）。不传 `-ModelDir` 时，产物不含中文手写模型。
+脚本依次执行测试 → `uberJar` → `jlink` → 组装 app image → 生成标准 / 精简 ZIP → 用 Inno Setup 6 编译 EXE 安装包，并在末尾尝试 `jpackage` MSI（当前环境无法完成，见「已知限制」）。不传 `-ModelDir` 时，产物不含中文手写模型。
+
+产物：
+
+```text
+dist\Blancall-7.6.1-win-x64-setup.exe           EXE 安装包（约 117 MB）
+dist\Blancall-7.6.1-win-x64-portable.zip        便携标准版（约 123 MB）
+dist\Blancall-7.6.1-win-x64-portable-lite.zip   便携精简版（约 116 MB）
+```
+
+EXE 安装包由 [Inno Setup 6](https://jrsoftware.org/isinfo.php) 编译（`tools/windows-installer.iss`）；未安装 Inno Setup 时脚本会跳过该步并保留两个 ZIP。
 
 ### 关于代码签名
 
@@ -153,7 +173,7 @@ powershell -ExecutionPolicy Bypass -File tools\package-windows.ps1 -ModelDir D:\
 
 | 项目 | 说明 |
 |---|---|
-| MSI 安装包 | 打包脚本会尝试 `jpackage` + WiX 3.14，但当前构建环境为受限令牌，`light.exe` 创建临时目录被拒绝访问；需在普通用户桌面会话重跑脚本 |
+| MSI 安装包 | EXE 安装包已提供；MSI 需 `jpackage` + WiX 3.14，当前构建环境为受限令牌，`light.exe` 创建临时目录被拒绝访问；需在普通用户桌面会话重跑脚本 |
 | 代码签名 | 无证书，SmartScreen 会提示未知发布者 |
 | 自动更新 | 无网络能力，升级需手动下载替换 |
 | 开机自启 | 未实现注册表 / 启动项写入 |
@@ -179,6 +199,7 @@ powershell -ExecutionPolicy Bypass -File tools\package-windows.ps1 -ModelDir D:\
 | 提醒设置 UI | 偏好落盘有单测 | 未逐项点击验证 |
 | 结果页提示统计、大屏统计布局 | 逻辑由 shared 测试覆盖 | 未人工验收 |
 | 导入前预备份 | 每次导入都会尝试写入 `backups\pre-import_*.zip` | 该预备份为 best-effort：写入失败（如磁盘满）时不会阻断导入，且不会提示；重要导入前请手动「导出备份」 |
+| EXE 安装包的快捷方式 / 卸载入口 | 文件安装、启动、卸载已在验证变体中通过（无快捷方式/注册表步骤） | 当前构建环境限制未签名程序写开始菜单与 HKCU，实际安装包的快捷方式与「应用和功能」注册项需在普通用户会话点验 |
 
 ### C. 与 Android 的平台差异（预期行为）
 
@@ -239,6 +260,10 @@ powershell -ExecutionPolicy Bypass -File tools\package-windows.ps1 -ModelDir D:\
 PDF 试卷导出嵌入 **霞鹜文楷（LXGW WenKai）** Regular 子集，遵循 **SIL Open Font License 1.1**。
 
 - 上游：https://github.com/lxgw/LxgwWenKai
+
+### 图标
+
+应用图标沿用 Android 版自有图标（`desktop/src/main/resources/icon/`），不含第三方商标或 Logo；不再使用 Compose Desktop 的默认图标。
 
 ### FSRS 间隔重复算法
 

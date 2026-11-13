@@ -59,7 +59,7 @@ Copy-Item (Join-Path $JdkHome "bin\javaw.exe") (Join-Path $image "runtime\bin") 
 Copy-Item "desktop\build\libs\blancall-win.jar" (Join-Path $image "app\blancall-win.jar") -Force
 Copy-Item "README.md", "PRIVACY.md" $image -Force
 if (Test-Path "THIRD-PARTY-LICENSES.md") { Copy-Item "THIRD-PARTY-LICENSES.md" $image -Force }
-$icon = "desktop\build\compose\default-resources\1.10.3\default-icon-windows.ico"
+$icon = "desktop\src\main\resources\icon\blancall.ico"
 if (Test-Path $icon) { Copy-Item $icon (Join-Path $image "Blancall.ico") -Force }
 if (Test-Path "models") { Copy-Item "models" (Join-Path $image "models") -Recurse -Force }
 
@@ -111,6 +111,28 @@ $liteZip = Join-Path $root "dist\Blancall-7.6.1-win-x64-portable-lite.zip"
 if (Test-Path $liteZip) { Remove-Item $liteZip -Force }
 Compress-Archive -Path (Join-Path $liteDir "Blancall") -DestinationPath $liteZip -CompressionLevel Optimal
 Write-Host "精简包：$liteZip"
+
+# EXE 安装包（Inno Setup 6；当前用户安装，卸载不删学习数据）
+$isccCandidates = @(
+    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+    "C:\Program Files\Inno Setup 6\ISCC.exe",
+    (Join-Path $root ".tools\innosetup\ISCC.exe")
+)
+$iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $iscc) {
+    $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $iscc = $cmd.Source }
+}
+if ($iscc) {
+    & $iscc "/DAppVersion=7.6.1" "/DSourceDir=$image" "/DOutputDir=$(Join-Path $root 'dist')" "tools\windows-installer.iss"
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "安装包：dist\Blancall-7.6.1-win-x64-setup.exe"
+    } else {
+        Write-Warning "Inno Setup 编译失败（退出码 $LASTEXITCODE），便携包已生成。"
+    }
+} else {
+    Write-Warning "未找到 Inno Setup 6（ISCC.exe），跳过 EXE 安装包；安装后重跑本脚本即可。"
+}
 
 # 可选：jpackage / MSI（受限令牌下通常不可用，失败不阻断便携包）
 $jpackage = Join-Path $JdkHome "bin\jpackage.exe"

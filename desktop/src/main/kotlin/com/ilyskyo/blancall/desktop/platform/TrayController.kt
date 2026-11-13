@@ -10,6 +10,7 @@ import java.awt.SystemTray
 import java.awt.TrayIcon
 import java.awt.image.BufferedImage
 import java.awt.Window
+import javax.imageio.ImageIO
 /**
  * 托盘：关闭到托盘后仍可接收提醒/快速回到应用。
  * 托盘不可用时静默降级（不崩溃）。
@@ -31,7 +32,7 @@ class TrayController(
                 exit.addActionListener { onExit() }
                 menu.add(open)
                 menu.add(exit)
-                val icon = TrayIcon(createIcon(), "Blancall", menu)
+                val icon = TrayIcon(loadIcon() ?: createIcon(), "Blancall", menu)
                 icon.addActionListener { showWindow() }
                 tray.add(icon)
                 trayIcon = icon
@@ -70,6 +71,20 @@ class TrayController(
         trayIcon?.let { runCatching { SystemTray.getSystemTray().remove(it) } }
         trayIcon = null
     }
+
+    /** 优先使用与安装包一致的应用图标；资源缺失时退回内置的 B 字图标。 */
+    private fun loadIcon(): BufferedImage? = runCatching {
+        TrayController::class.java.getResourceAsStream("/icon/blancall.png")?.use { stream ->
+            val source = ImageIO.read(stream) ?: return@use null
+            val scaled = BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB)
+            val g = scaled.createGraphics()
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            g.drawImage(source, 0, 0, 16, 16, null)
+            g.dispose()
+            scaled
+        }
+    }.getOrNull()
 
     private fun createIcon(): BufferedImage {
         val img = BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB)

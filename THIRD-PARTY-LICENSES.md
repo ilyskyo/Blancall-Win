@@ -188,6 +188,8 @@ by Clinton Ingram, saucecontrol
 - 许可证：SIL Open Font License 1.1（允许嵌入与再分发）
 - 说明：界面文字使用 Windows 自带字体（如 Microsoft YaHei UI），不随包分发系统字体。
 
+**应用图标**：沿用 Android 版自有 `ic_launcher`（`desktop/src/main/resources/icon/`），为本项目资产；不使用 Compose Desktop 默认图标或其他第三方 Logo。
+
 ## 11. FSRS-6 算法
 
 - 上游实现：https://github.com/open-spaced-repetition/fsrs-rs（MIT License）
@@ -204,6 +206,7 @@ by Clinton Ingram, saucecontrol
 | JUnit Jupiter | 5.11.4 | Eclipse Public License 2.0 | 测试 |
 | JUnit 4（vintage） | 4.13.2 | Eclipse Public License 1.0 | 测试 |
 | WiX Toolset | 3.14 | Microsoft Reciprocal License (MS-RL) | 仅在尝试生成 MSI 时使用 |
+| Inno Setup | 6.7.3 | Inno Setup License（编译器标注 Non-commercial use only） | 编译 EXE 安装包；不随安装包分发。本项目为非商业开源项目；商业构建需另行取得其商业授权 |
 | jpackage | JDK 21 | GPLv2 + Classpath Exception | 打包工具 |
 
 以上工具不会出现在便携包或安装目录中（jlink 运行时另见 §9）。

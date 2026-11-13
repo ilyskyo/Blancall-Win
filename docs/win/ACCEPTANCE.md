@@ -134,3 +134,25 @@
 
 - 手写压感/标点手势/跨设备一致率未做；MSI 需普通用户会话（脚本已自动接入 WiX）。
 - 真实 Android 备份端到端回归与 DPI 像素级布局矩阵需真实桌面会话人工验收（125/150/200% 启动冒烟已通过，算法规模预算已自动化覆盖）。
+
+## 7. 2026-11-13 增量（0.4.2-win：EXE 安装包）
+
+### 产物
+
+| 文件 | 大小 | 说明 |
+|---|---:|---|
+| `dist\Blancall-7.6.1-win-x64-setup.exe` | 116.5 MB | Inno Setup 6.7.3 编译；当前用户安装，无需管理员 |
+| `dist\Blancall-7.6.1-win-x64-portable.zip` | 122.9 MB | 含 ncnn 与拉丁模型，不含中文手写模型 |
+| `dist\Blancall-7.6.1-win-x64-portable-lite.zip` | 115.8 MB | 不含 `models/` |
+
+### 自动化/手工
+
+| 项 | 状态 | 证据/说明 |
+|---|---|---|
+| 安装包编译 | PASS | `ISCC.exe` 退出码 0；`tools/windows-installer.iss`；`ArchitecturesAllowed=x64compatible` |
+| 静默安装（验证变体） | PASS | 变体关闭快捷方式与卸载注册项（`/NOICONS` + `CreateUninstallRegKey=no`），`/VERYSILENT` 退出码 0；`Blancall.vbs`、`app\blancall-win.jar`、`runtime\bin\javaw.exe`、`models\ncnn.dll`、`models\hccr_en\model_en.bin`、`README.md`、`THIRD-PARTY-LICENSES.md`、`unins000.exe` 全部存在 |
+| 安装后启动 | PASS | 从安装目录运行 `Blancall.vbs`，`javaw` 窗口标题 `Blancall`，`Responding=True` |
+| 静默卸载（验证变体） | PASS | `unins000.exe /VERYSILENT` 退出码 0，程序目录删除；`%LOCALAPPDATA%\Blancall` 保持存在 |
+| 正式安装包的快捷方式/卸载注册项 | 未验证（环境） | 本环境限制未签名程序写开始菜单与 `HKCU`（PowerShell 与已签名程序可写，自签名仍被拒绝）；需普通用户会话点验 |
+| MSI | 阻塞（环境） | 同 0.4.0：`light.exe` 临时目录特权受限；EXE 安装包已替代 |
+

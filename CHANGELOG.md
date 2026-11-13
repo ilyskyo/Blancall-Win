@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.2-win — 2026-11-13
+
+新增可双击安装的 EXE 安装包。
+
+### 新增
+
+- `tools/windows-installer.iss`：Inno Setup 6 安装脚本，当前用户安装（无需管理员），默认目录 `%LOCALAPPDATA%\Programs\Blancall`，可选桌面快捷方式、开始菜单项与「应用和功能」卸载入口；卸载不删除 `%LOCALAPPDATA%\Blancall` 学习数据。
+- `tools/package-windows.ps1`：打包末尾自动调用 `ISCC.exe` 生成 `dist\Blancall-7.6.1-win-x64-setup.exe`；未安装 Inno Setup 时跳过并保留两个 ZIP。
+- 安装包固定 `AppId`（与 Gradle `upgradeUuid` 一致），后续版本可原地升级；`ArchitecturesAllowed=x64compatible`。
+- 应用图标改用 Android 版自有 `ic_launcher`，替换 Compose 默认的 Kotlin 图标；安装包、快捷方式、卸载程序、托盘与窗口标题栏统一使用 `desktop/src/main/resources/icon/blancall.{png,ico}`（16–256 共 8 个尺寸）。
+
+### 验证
+
+- 静默安装到测试目录：退出码 0，`Blancall.vbs`、jar、`runtime`、`ncnn.dll`、`hccr_en`、文档、`unins000.exe` 全部落盘。
+- 从安装目录启动：进程窗口标题 `Blancall`，响应正常。
+- 静默卸载：退出码 0，程序目录删除，`%LOCALAPPDATA%\Blancall` 保留。
+- 当前构建环境限制未签名程序写开始菜单与 HKCU，因此快捷方式与卸载注册项使用「无快捷方式/无注册表」验证变体测试；实际安装包的这两步需在普通用户会话点验（README 已注明）。
+
 ## 0.4.1-win — 2026-11-13
 
 分发合规调整：中文手写模型移出公开仓库。

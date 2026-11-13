@@ -15,6 +15,7 @@ import com.ilyskyo.blancall.data.repository.AchievementTimelineStore
 import com.ilyskyo.blancall.data.repository.CustomClozeStore
 import com.ilyskyo.blancall.data.repository.DailySentenceCoordinator
 import com.ilyskyo.blancall.data.repository.FsrsStateStore
+import com.ilyskyo.blancall.data.repository.HomeLayoutStore
 import com.ilyskyo.blancall.data.repository.InProgressPracticeStore
 import com.ilyskyo.blancall.data.repository.MaskConfigStore
 import com.ilyskyo.blancall.data.repository.ReaderPrefsStore
@@ -56,6 +57,7 @@ class AppState(
     val maskConfig = MaskConfigStore.getInstance(dataDir)
     val readerPrefs = ReaderPrefsStore.getInstance(dataDir)
     val sentenceCards = SentenceCardStore.getInstance(dataDir)
+    val homeLayout = HomeLayoutStore.getInstance(dataDir)
     val achievements = AchievementTimelineStore.getInstance(dataDir)
     val contentPacks = ContentPackStore.getInstance(dataDir)
     val readingMarks = ReadingMarkStore.getInstance(dataDir)
@@ -132,6 +134,9 @@ class AppState(
 
     var screen by mutableStateOf<Screen>(Screen.Home)
         private set
+    /** 最近一次导航是否为返回，供页面转场判断方向。 */
+    var isBackNavigation by mutableStateOf(false)
+        private set
     var toast by mutableStateOf<String?>(null)
         private set
     /** 首启欢迎页（设置里可重播） */
@@ -151,11 +156,21 @@ class AppState(
 
     fun navigate(target: Screen) {
         if (target == screen) return
+        isBackNavigation = false
         backStack.addLast(screen)
         screen = target
     }
 
+    /** 根 tab 平级切换：清空子页栈（与 Android popUpTo(home) 的口径一致）。 */
+    fun goRoot(target: Screen) {
+        if (target == screen) return
+        isBackNavigation = false
+        backStack.clear()
+        screen = target
+    }
+
     fun back() {
+        isBackNavigation = true
         screen = backStack.removeLastOrNull() ?: Screen.Home
     }
 

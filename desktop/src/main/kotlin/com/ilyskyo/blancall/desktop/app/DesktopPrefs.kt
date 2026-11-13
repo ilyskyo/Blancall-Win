@@ -58,6 +58,9 @@ class DesktopPrefs(private val file: File) {
     /** 首页隐藏的卡片 key */
     var homeSectionHidden by mutableStateOf<Set<String>>(emptySet())
         private set
+    /** 强调色序号（与 Android AccentPresets 同一组 6 套） */
+    var accentIndex by mutableStateOf(0)
+        private set
 
     init {
         runCatching {
@@ -87,6 +90,7 @@ class DesktopPrefs(private val file: File) {
                 )
                 homeSectionHidden = p.getProperty("homeSectionHidden", "")
                     .split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+                accentIndex = p.getProperty("accentIndex", "0").toIntOrNull()?.coerceIn(0, 5) ?: 0
             }
         }
     }
@@ -138,6 +142,11 @@ class DesktopPrefs(private val file: File) {
 
     fun updateUiScale(value: Float) {
         uiScale = value.coerceIn(0.85f, 1.30f)
+        save()
+    }
+
+    fun updateAccentIndex(value: Int) {
+        accentIndex = value.coerceIn(0, 5)
         save()
     }
 
