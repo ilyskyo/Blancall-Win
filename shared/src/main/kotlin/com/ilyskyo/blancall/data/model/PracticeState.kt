@@ -1,0 +1,48 @@
+// Copyright (c) 2026 ilyskyo
+// SPDX-License-Identifier: MIT
+
+package com.ilyskyo.blancall.data.model
+
+/**
+ * 练习进度状态
+ */
+enum class PracticeStatus {
+    /** 进行中 —— 用户中途保存退出 */
+    IN_PROGRESS,
+    /** 已完成 —— 全部提交批改 */
+    COMPLETED
+}
+
+/**
+ * 练习进度快照，用于「继续练习」功能
+ */
+data class PracticeState(
+    val articleId: Long,
+    // 保持 String 以兼容旧 JSON 数据；推荐通过 toPracticeMode() 转换为枚举使用
+    val mode: String,              // "SENTENCE" | "WORD" | "REVERSE"，见 PracticeMode
+    val status: PracticeStatus = PracticeStatus.IN_PROGRESS,
+    val totalBlanks: Int = 0,
+    val answeredCount: Int = 0,    // 已填写数量
+    // 不可变 Map；每次更新需 copy 整个 PracticeState。仓库层内部用 MutableMap，对外暴露不可变快照
+    val answers: Map<Int, String> = emptyMap(),
+    // 反向默写模式下保存的整段输入文本（句子/字词挖空模式为空）
+    val dictationInput: String = "",
+    // 上次挖好的空（当前模式的挖空结果 JSON 序列化），供「继续练习」精确恢复，无需重新生成/选难度
+    val clozeJson: String? = null,
+    // 本次练习来自哪套自定义挖空配置（仅自定义练习有值；0 = 非自定义/旧数据），
+    // 供「继续练习」恢复后重新挂上配置身份（锁定模式/策略/段落）
+    val configId: Long = 0L,
+    // 句级聚焦会话（句级薄弱榜「点一句去练」/ 单条错题「复习」）点的目标句在【全文切句】中的索引；
+    // -1 = 整篇/段落模式。供「继续练习」恢复后按同一窗口重建句子锚点表 ——
+    // 聚焦窗口的句子索引从 0 起，若按整篇口径重建锚点，判分记录的句级归属会全指到文章开头。
+    val focusSentence: Int = -1,
+    /**
+     * 保存进度时正文的 MD5。恢复时与当前正文比对：
+     * 不一致说明文章被编辑过，旧 cloze 的句子/空位已经不对应当前正文，
+     * 不能直接把旧挖空和答案套上去（否则判分与热力图会静默错标）。
+     */
+    val contentHash: String? = null,
+    /** 本次练习真正的开始时刻（恢复会话时沿用第一次进入的时间，避免 duration 被重置为 0）。 */
+    val startedAt: Long = 0L,
+    val lastPracticeTime: Long = System.currentTimeMillis()
+)

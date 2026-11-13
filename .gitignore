@@ -1,0 +1,18 @@
+.gradle/
+.kotlin/
+.tools/
+build/
+**/build/
+dist/
+.audit/
+.idea/
+*.iml
+local.properties
+_shots/
+_tmp/
+_run*.log
+*.log
+*.hprof
+.DS_Store
+# 中文手写模型受 CASIA-HWDB 非商业条款约束，不随仓库分发；由 GitHub Release 单独提供
+models/hccr/

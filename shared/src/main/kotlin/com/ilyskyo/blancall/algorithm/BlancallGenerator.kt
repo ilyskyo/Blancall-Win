@@ -1,0 +1,954 @@
+// Copyright (c) 2026 ilyskyo
+// SPDX-License-Identifier: MIT
+
+package com.ilyskyo.blancall.algorithm
+
+import kotlin.random.Random
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * 挖空生成器：支持句子挖空和字词挖空两种模式
+ * - 句子挖空：可挖分句、半句、复句（按逗号/分号粒度切分，相邻选中分句自动合并）
+ * - 字词挖空：挖 1-3 字词或英文单词，相邻选中词自动合并为一个空
+ * - 支持动态自适应策略（均衡/薄弱点优先/全覆盖）
+ * - 支持反向默写（段落打散后默写原文）
+ * - 支持古文模式（优先挖实词，虚词可选不挖）
+ * - 支持中英文混排
+ */
+object BlancallGenerator {
+
+    /** 逗号/分号切分正则（短文本兜底用，编译一次） */
+    private val CLAUSE_SPLIT_REGEX = Regex("[，,;；]")
+    /** 分句切分标点（编译一次） */
+    private val CLAUSE_PUNCT = setOf('，', ',', ';', '；', '、')
+    /** 英文单词匹配（无汉字时兜底挖空，编译一次避免重复编译） */
+    private val ENGLISH_WORD_REGEX = Regex("[A-Za-z]+")
+
+    /** 挖空策略 */
+    enum class Strategy {
+        BALANCED,         // 均衡模式
+        WEAKNESS_FOCUS,   // 薄弱点优先
+        FULL_COVERAGE     // 全篇全覆盖
+    }
+
+    /** 错误历史权重数据 */
+    data class ErrorProfile(
+        val sentenceErrorRates: Map<Int, Float> = emptyMap(),  // 句子索引 → 错误率
+        val charErrorRates: Map<Char, Float> = emptyMap(),     // 字符 → 错误率
+        val wordErrorRates: Map<String, Float> = emptyMap(),   // 词 → 错误率（英文用小写）
+        /** 记忆强度因子（由 FSRS 留存率导出）：1=记忆正常，>1=记忆偏弱 */
+        val memoryFactor: Float = 1f
+    )
+
+    data class SentenceClozeResult(
+        val sentences: List<String>,
+        val blanks: List<SentenceBlankInfo>,
+        val displayText: String
+    )
+
+    data class SentenceBlankInfo(
+        val index: Int,
+        val originalText: String,          // 被挖掉的原文（可能是分句、半句或复句）
+        val sentenceIndex: Int,
+        val startInSentence: Int,          // 在句内的起始字符位置
+        val endInSentence: Int             // 在句内的结束字符位置（exclusive）
+    )
+
+    /**
+     * 句子挖空的展示文本：句内从后往前替换为 `[N] ___`。
+     *
+     * 这是「练习页正文 / PDF 试卷 / 分享图」三者共用的唯一构造。
+     * AI 路径也必须走这里；否则 displayText 是完整原文，导出时没有空位，
+     * 答案会随试卷一起发出去（同时第二页还会再列一遍答案）。
+     */
+    fun buildSentenceDisplayText(
+        sentences: List<String>,
+        blanks: List<SentenceBlankInfo>,
+    ): String {
+        val builders = sentences.map { StringBuilder(it) }.toMutableList()
+        blanks
+            .asSequence()
+            .filter { it.sentenceIndex in builders.indices }
+            .sortedWith(
+                compareByDescending<SentenceBlankInfo> { it.sentenceIndex }
+                    .thenByDescending { it.startInSentence }
+            )
+            .forEach { b ->
+                val builder = builders[b.sentenceIndex]
+                val start = b.startInSentence.coerceIn(0, builder.length)
+                val end = b.endInSentence.coerceIn(start, builder.length)
+                if (end > start) {
+                    builder.replace(start, end, "[${b.index + 1}] ___")
+                }
+            }
+        return builders.joinToString("\n") { it.toString() }
+    }
+
+    data class WordClozeResult(
+        val sentences: List<WordClozeSentence>,
+        val blanks: List<WordBlankInfo>,
+        val displayText: String,
+        val maxBlanks: Int = 0,
+        val suggestedBlanks: Int = 0
+    )
+
+    data class WordClozeSentence(
+        val text: String,
+        val blanks: List<Int> = emptyList()
+    )
+
+    data class WordBlankInfo(
+        val index: Int,
+        val originalChar: String,
+        val position: Int
+    )
+
+    /**
+     * 字词挖空句子的**原文**。
+     *
+     * [WordClozeSentence.text] 是已经替换成 `___` 的展示文本，不能拿去做句级 FSRS 键：
+     * 同一句在句子挖空里是原文键，在字词挖空里会变成带 `___` 的另一个键，
+     * 于是同一句出现多份记忆状态，统计与到期计数分裂。
+     * 这里按 `___` 的左右片段与 `WordBlankInfo.originalChar` 一一拼回原文；
+     * 片段数对不上（脏数据/旧格式）时退回「去掉下划线占位」，至少不会把 `___` 带进键里。
+     */
+    fun originalWordSentence(result: WordClozeResult, sentenceIndex: Int): String {
+        val sentence = result.sentences.getOrNull(sentenceIndex) ?: return ""
+        val pieces = sentence.text.split("___")
+        val originals = sentence.blanks.mapNotNull { idx ->
+            result.blanks.getOrNull(idx)?.originalChar
+        }
+        if (pieces.size - 1 != originals.size) {
+            return sentence.text.replace("___", "")
+        }
+        return buildString(sentence.text.length) {
+            for (i in pieces.indices) {
+                append(pieces[i])
+                if (i < originals.size) append(originals[i])
+            }
+        }
+    }
+
+    // ========== 句子挖空：支持分句/半句/复句 ==========
+
+    /**
+     * 分句在全文中的坐标：句子下标 + 句内起始位置。
+     *
+     * 挖空的最小粒度就是分句。「本地算法」和「AI 选空」必须共用同一套切分
+     * （[clauseSpans]）与同一套合并规则（[buildClauseBlanks]），否则同样一篇文章，
+     * 本地挖出「＿＿，＿＿」而 AI 一口气挖掉整句，用户看到的就是两种完全不同的挖法。
+     */
+    data class ClauseSpan(
+        val text: String,
+        val sentenceIndex: Int,
+        val startInSentence: Int
+    )
+
+    /**
+     * 把每句按逗号/分号/顿号拆成有序分句，标点保留在前一个分句末尾。
+     * 位置用累加指针记录，避免 indexOf 在重复短语上定位错误。
+     */
+    fun clauseSpans(sentences: List<String>): List<ClauseSpan> {
+        val out = mutableListOf<ClauseSpan>()
+        for (sIdx in sentences.indices) {
+            var pos = 0
+            for (part in splitByClausePunctuation(sentences[sIdx])) {
+                if (part.isNotBlank()) {
+                    out.add(ClauseSpan(part, sIdx, pos))
+                }
+                pos += part.length
+            }
+        }
+        return out
+    }
+
+    /**
+     * 选中分句 → 挖空区间。同一句内相邻的选中分句合并为一个空（复句）。
+     *
+     * 空只覆盖实义内容：末尾标点留在正文里（标点不是要默写的记忆内容）；
+     * 分句之间的标点仍留在空内 —— 它是句子结构的一部分，要不要显式提示交给界面开关。
+     * 纯标点组成的退化分句去掉尾部后可能为空，不能留下"空答案"的空。
+     */
+    fun buildClauseBlanks(
+        clauses: List<ClauseSpan>,
+        selectedClauseIndices: Set<Int>
+    ): List<SentenceBlankInfo> {
+        val groups = mutableListOf<List<ClauseSpan>>()
+        var i = 0
+        while (i < clauses.size) {
+            if (i in selectedClauseIndices) {
+                val group = mutableListOf(clauses[i])
+                i++
+                while (i < clauses.size && i in selectedClauseIndices &&
+                    clauses[i].sentenceIndex == group.last().sentenceIndex
+                ) {
+                    group.add(clauses[i])
+                    i++
+                }
+                groups.add(group)
+            } else {
+                i++
+            }
+        }
+        return groups.mapNotNull { group ->
+            val first = group.first()
+            val covered = trimBlankTrailingPunctuation(group.joinToString("") { it.text })
+            if (covered.isEmpty()) return@mapNotNull null
+            SentenceBlankInfo(
+                index = 0,
+                originalText = covered,
+                sentenceIndex = first.sentenceIndex,
+                startInSentence = first.startInSentence,
+                endInSentence = first.startInSentence + covered.length
+            )
+        }.mapIndexed { idx, b -> b.copy(index = idx) }
+    }
+
+    fun generateSentenceCloze(
+        content: String,
+        count: Int = 0,
+        errorProfile: ErrorProfile = ErrorProfile(),
+        strategy: Strategy = Strategy.BALANCED,
+        /** 只在这些全文句子下标里挖空；用于「本次只覆盖到期句」。null = 不限制。 */
+        focusSentenceIndices: Set<Int>? = null,
+    ): SentenceClozeResult {
+        var allSentences = SentenceSplitter.split(content)
+
+        // 短文本兜底：按逗号/分号再次切分
+        if (allSentences.size <= 1 && content.length > 5) {
+            allSentences = content.split(CLAUSE_SPLIT_REGEX)
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && it.any { isChinese(it) } }
+            if (allSentences.isEmpty()) {
+                allSentences = listOf(content.trim())
+            }
+        }
+
+        if (allSentences.isEmpty()) {
+            return SentenceClozeResult(emptyList(), emptyList(), content)
+        }
+
+        // 将每句按逗号/分号/顿号拆分为分句（与 AI 路径共用同一套切分，见 [clauseSpans]）
+        val allClauses = clauseSpans(allSentences)
+
+        // 确定挖几个空（自动档：记忆偏弱时适度加量，更充分复习易忘内容）
+        val totalClauses = allClauses.size
+        val baseCount = when {
+            count > 0 -> count.coerceIn(1, totalClauses)
+            totalClauses == 1 -> 1
+            totalClauses <= 4 -> maxOf(1, totalClauses / 2)
+            else -> maxOf(1, totalClauses / 3)
+        }
+        val densityScale = if (count > 0) 1f else errorProfile.memoryFactor.coerceIn(1f, 1.6f)
+        val actualCount = (baseCount * densityScale).toInt().coerceIn(1, totalClauses)
+
+        // 策略驱动选择要挖的分句；focus 模式先保证每个目标句至少一个空。
+        val focus = focusSentenceIndices
+            ?.filterTo(HashSet()) { it in allSentences.indices }
+            ?.takeIf { it.isNotEmpty() }
+        val focusPool = if (focus == null) emptyList() else {
+            allClauses.indices.filter { allClauses[it].sentenceIndex in focus }
+        }
+        val focusCount = if (focus == null) 0 else {
+            focus.count { s -> allClauses.any { it.sentenceIndex == s } }
+        }
+        val effectiveCount = if (focus == null) {
+            actualCount
+        } else {
+            maxOf(actualCount, focusCount).coerceAtMost(focusPool.size)
+        }
+        val selectedClauseIndices = if (focus != null) {
+            val selected = mutableSetOf<Int>()
+            focus.sorted().forEach { sentenceIndex ->
+                allClauses.indices
+                    .filter { allClauses[it].sentenceIndex == sentenceIndex }
+                    .maxByOrNull { allClauses[it].text.length }
+                    ?.let(selected::add)
+            }
+            if (selected.size < effectiveCount) {
+                selected += focusPool
+                    .filter { it !in selected }
+                    .shuffled()
+                    .take(effectiveCount - selected.size)
+            }
+            selected
+        } else when (strategy) {
+            Strategy.WEAKNESS_FOCUS -> {
+                // 按错误率加权排序，优先选薄弱分句。
+                // 句级错误率尚无数据链路（sentenceErrorRates 恒空）时，若仍按排序 take 会退化为
+                // "永远挖文章开头 N 句"；无数据时改为随机选取，保持策略语义中性。
+                val hasSentenceData = allClauses.any { (errorProfile.sentenceErrorRates[it.sentenceIndex] ?: 0f) > 0f }
+                if (!hasSentenceData) {
+                    allClauses.indices.shuffled().take(actualCount).toMutableSet()
+                } else {
+                    val weighted = allClauses.indices.map { idx ->
+                        val sentIdx = allClauses[idx].sentenceIndex
+                        val errorRate = errorProfile.sentenceErrorRates[sentIdx] ?: 0f
+                        idx to (errorRate + 0.1f)  // 基础权重 0.1 避免零概率
+                    }.sortedByDescending { it.second }
+                    weighted.take(actualCount).map { it.first }.toMutableSet()
+                }
+            }
+            Strategy.FULL_COVERAGE -> {
+                // 均匀分布，每个分句都有机会（用 toMutableSet 去重后补足）
+                val step = (allClauses.size.toFloat() / actualCount).toInt().coerceAtLeast(1)
+                val indices = linkedSetOf<Int>()
+                var pos = 0
+                while (indices.size < actualCount && pos < allClauses.size) {
+                    indices.add(pos.coerceAtMost(allClauses.size - 1))
+                    pos += step
+                }
+                // 如果因步长问题不足，从尾部补充
+                var fill = allClauses.size - 1
+                while (indices.size < actualCount && fill >= 0) {
+                    indices.add(fill)
+                    fill--
+                }
+                indices.take(actualCount).toSet()
+            }
+            else -> {
+                // 均衡：随机但有微弱薄弱倾斜；记忆偏弱时倾斜更强（更偏向薄弱句）
+                val mf = errorProfile.memoryFactor.coerceIn(1f, 1.6f)
+                val weighted = allClauses.indices.map { idx ->
+                    val sentIdx = allClauses[idx].sentenceIndex
+                    val errorRate = errorProfile.sentenceErrorRates[sentIdx] ?: 0f
+                    idx to (0.5f + errorRate * 0.5f * mf)
+                }
+                // 加权随机采样（每次移除已选项后重新计算总权重）
+                val selected = mutableSetOf<Int>()
+                val tempWeights = weighted.toMutableList()
+                repeat(actualCount) {
+                    if (tempWeights.isEmpty()) return@repeat
+                    val currentTotal = tempWeights.sumOf { it.second.toDouble() }
+                    var r = Random.nextDouble() * currentTotal
+                    var chosen = tempWeights.last().first
+                    for ((idx, w) in tempWeights) {
+                        r -= w
+                        if (r <= 0) { chosen = idx; break }
+                    }
+                    selected.add(chosen)
+                    tempWeights.removeAll { it.first == chosen }
+                }
+                selected
+            }
+        }
+
+        // 选中分句 → 挖空区间（同一句内相邻选中分句合并为一个空 = 复句）。
+        // 与 AI 路径共用 [buildClauseBlanks]，保证两条路径挖出来的空完全同形。
+        val blanks = buildClauseBlanks(allClauses, selectedClauseIndices)
+
+        // 构建 displayText（在句内用 [N] ___ 标记挖空位置）
+        return SentenceClozeResult(
+            allSentences,
+            blanks,
+            buildSentenceDisplayText(allSentences, blanks)
+        )
+    }
+
+    /** 按逗号/分号/顿号拆分分句，标点保留在前一个分句末尾 */
+    private fun splitByClausePunctuation(text: String): List<String> {
+        val result = mutableListOf<String>()
+        val current = StringBuilder()
+        for (ch in text) {
+            current.append(ch)
+            if (ch in CLAUSE_PUNCT) {
+                result.add(current.toString())
+                current.clear()
+            }
+        }
+        if (current.isNotEmpty()) result.add(current.toString())
+        return result.ifEmpty { listOf(text) }
+    }
+
+    /**
+     * 挖空末尾剥离的标点：句读标点 + 句末标点 + 右配对符号。
+     * 不含数字/字母 —— 「第 3」结尾的 3 是内容，不是标点。
+     */
+    private val BLANK_TRAILING_PUNCT: Set<Char> = CLAUSE_PUNCT + setOf(
+        '。', '.', '！', '!', '？', '?', '…', '~', '～', '：', ':',
+        '"', '\'', '”', '’', '」', '』', '】', '）', ')', '》', '〉'
+    )
+
+    /**
+     * 去掉片段末尾的标点（连同尾随空白）：挖空止于实义内容，标点留在正文里可见。
+     * 只动末尾 —— 内部标点是分句结构的一部分，仍归空内。
+     */
+    internal fun trimBlankTrailingPunctuation(text: String): String {
+        var end = text.length
+        while (end > 0 && (text[end - 1] in BLANK_TRAILING_PUNCT || text[end - 1].isWhitespace())) {
+            end--
+        }
+        return text.substring(0, end)
+    }
+
+    /**
+     * 挖空占位的「标点骨架」：标点原样保留，连续的非标点内容折叠成一个占位段。
+     * 「今日割五城，明日割十城」→「＿＿，＿＿」。
+     *
+     * 只回答「这一空被分成了几段、段间是什么标点」，不泄露任何要默写的字。
+     * 纯字符串操作，供「标点提示」开关在渲染层使用，可被 JVM 单测直接覆盖。
+     */
+    fun punctuationSkeleton(text: String, placeholder: String = "＿＿"): String {
+        if (text.isEmpty()) return text
+        val sb = StringBuilder()
+        var inContent = false
+        for (c in text) {
+            if (isBlankPunctuation(c)) {
+                sb.append(c)
+                inContent = false
+            } else if (!inContent) {
+                sb.append(placeholder)
+                inContent = true
+            }
+        }
+        return sb.toString()
+    }
+
+    /** 空内是否含被挖去的标点：没有标点时保持原来的占位外观，不让开关显得"改了字号" */
+    fun hasBlankedPunctuation(text: String): Boolean = text.any { isBlankPunctuation(it) }
+
+    /** 标点 = 既非汉字/字母/数字，也非空白的字符（数字是内容，绝不能当标点剥掉） */
+    private fun isBlankPunctuation(c: Char): Boolean =
+        !isChinese(c) && !c.isLetterOrDigit() && !c.isWhitespace()
+
+    /** 字词挖空单个空的汉字上限：本地候选窗口就是 1..3 字，AI 路径必须同口径 */
+    const val WORD_BLANK_MAX_CHARS = 3
+
+    /**
+     * 把「字词挖空」的一个空收缩到本地同一个上限：整段连续汉字超过 [WORD_BLANK_MAX_CHARS]
+     * 时只保留开头那几个字。
+     *
+     * 本地候选永远是 1..3 个连续汉字（或整词英文），AI 提示词却允许 4 字且没有窗口约束；
+     * 不剪的话同一个位置本地挖「王安石」、AI 挖「王安石变法」，两条路径的挖法就又不是一套了。
+     * 混排片段（「CO₂」「pH 值」）不动：它的边界由原文自己决定，按字宽剪会切坏词。
+     *
+     * 反向默写**不用**这套上限：那里的跨度是难度档位唯一的作用点（见 AiClozeGenerator）。
+     */
+    fun capWordBlankEnd(sentence: String, start: Int, end: Int): Int {
+        if (start !in 0..sentence.length || end !in start..sentence.length) return end
+        val span = sentence.substring(start, end)
+        if (span.length <= WORD_BLANK_MAX_CHARS) return end
+        if (!span.all { isChinese(it) }) return end
+        return start + WORD_BLANK_MAX_CHARS
+    }
+
+    // ========== 字词挖空：1-3字词 + 相邻合并 ==========
+
+    fun generateWordCloze(
+        content: String,
+        count: Int = 0,
+        errorProfile: ErrorProfile = ErrorProfile(),
+        strategy: Strategy = Strategy.BALANCED,
+        classicalMode: Boolean = false
+    ): WordClozeResult {
+        val allSentences = SentenceSplitter.split(content)
+
+        // 词候选（连续汉字 1-3 字，或英文单词整体）
+        data class Candidate(
+            val text: String,
+            val sentenceIdx: Int,
+            val charStart: Int,
+            val charEnd: Int,       // exclusive
+            val difficulty: Float
+        )
+
+        val candidates = mutableListOf<Candidate>()
+        for (sIdx in allSentences.indices) {
+            val sentence = allSentences[sIdx]
+            var i = 0
+            while (i < sentence.length) {
+                if (isChinese(sentence[i])) {
+                    val runStart = i
+                    while (i < sentence.length && isChinese(sentence[i])) i++
+                    val runEnd = i
+                    for (start in runStart until runEnd) {
+                        for (len in 1..minOf(3, runEnd - start)) {
+                            val word = sentence.substring(start, start + len)
+                            val avgDiff = word.map { DifficultyCalculator.calculateCharDifficulty(it) }.average().toFloat()
+                            // 错误历史加权（字级别 + 词级别）；记忆偏弱时错误历史权重更大
+                            val mf = errorProfile.memoryFactor.coerceIn(1f, 1.6f)
+                            val charErrorBonus = word.maxOfOrNull { errorProfile.charErrorRates[it] ?: 0f } ?: 0f
+                            val wordErrorBonus = errorProfile.wordErrorRates[word] ?: 0f
+                            val mistakeBonus = (charErrorBonus * 0.3f + wordErrorBonus * 0.4f) * mf
+                            // 古文模式：虚词降权
+                            val functionWordPenalty = if (classicalMode && isFunctionWord(word)) -0.3f else 0f
+                            val difficulty = (avgDiff + mistakeBonus + functionWordPenalty).coerceIn(0f, 1f)
+                            candidates.add(Candidate(word, sIdx, start, start + len, difficulty))
+                        }
+                    }
+                } else if (sentence[i].isLetter()) {
+                    // 英文单词候选（整个单词作为一个空，错误率用小写 key 匹配）
+                    val runStart = i
+                    while (i < sentence.length && sentence[i].isLetter()) i++
+                    val word = sentence.substring(runStart, i)
+                    val wordErrorBonus = (errorProfile.wordErrorRates[word.lowercase()] ?: 0f) * errorProfile.memoryFactor.coerceIn(1f, 1.6f)
+                    val difficulty = (0.5f + wordErrorBonus).coerceIn(0f, 1f)
+                    candidates.add(Candidate(word, sIdx, runStart, i, difficulty))
+                } else {
+                    i++
+                }
+            }
+        }
+
+        if (candidates.isEmpty()) {
+            return WordClozeResult(
+                allSentences.map { WordClozeSentence(it) }, emptyList(), content,
+                maxBlanks = 0, suggestedBlanks = 0
+            )
+        }
+
+        // 最大可挖空数 = 全部中文字符数 + 英文单词数
+        val maxBlanks = allSentences.sumOf { s -> s.count { isChinese(it) } + countEnglishWords(s) }
+        val totalChineseChars = allSentences.sumOf { s -> s.count { isChinese(it) } }
+
+        // 建议挖空数（保守建议，不等于最大值）
+        val suggestedBlanks = when {
+            maxBlanks <= 3 -> maxOf(1, maxBlanks)
+            maxBlanks <= 10 -> maxOf(2, maxBlanks / 2)
+            maxBlanks <= 30 -> maxOf(3, maxBlanks / 3)
+            maxBlanks <= 80 -> maxOf(4, maxBlanks / 5)
+            else -> maxOf(5, maxBlanks / 8)
+        }.coerceIn(1, maxBlanks)
+
+        // 贪心选取不重叠的词
+        val sorted = candidates.sortedByDescending { it.difficulty }
+        val occupiedBySentence = mutableMapOf<Int, MutableList<IntRange>>()
+        val selected = mutableListOf<Candidate>()
+
+        for (c in sorted) {
+            val occupied = occupiedBySentence.getOrPut(c.sentenceIdx) { mutableListOf() }
+            val range = c.charStart until c.charEnd
+            if (occupied.none { it.first <= range.last && range.first <= it.last }) {
+                selected.add(c)
+                occupied.add(range)
+            }
+        }
+
+        val finalSelection: List<Candidate>
+
+        if (count > 0) {
+            val targetCount = count.coerceIn(1, maxBlanks)
+
+            if (targetCount <= selected.size) {
+                // 多字候选够用 → 取前 targetCount 个，不合并
+                finalSelection = selected
+                    .sortedByDescending { it.difficulty }
+                    .take(targetCount)
+                    .sortedWith(compareBy({ it.sentenceIdx }, { it.charStart }))
+            } else {
+                // 多字候选不够 → 混合多字 + 单字补充
+                val usedPositions = selected.flatMap {
+                    (it.charStart until it.charEnd).map { p -> it.sentenceIdx to p }
+                }.toSet()
+
+                val singleChars = candidates
+                    .filter { it.text.length == 1 && (it.sentenceIdx to it.charStart) !in usedPositions }
+                    .sortedByDescending { it.difficulty }
+
+                val combined = selected + singleChars.take(targetCount - selected.size)
+
+                if (combined.size >= targetCount) {
+                    finalSelection = combined.sortedWith(compareBy({ it.sentenceIdx }, { it.charStart }))
+                } else {
+                    // 多字候选占位过多 → 全部改用单字重选
+                    val singleOnly = candidates
+                        .filter { it.text.length == 1 }
+                        .sortedByDescending { it.difficulty }
+
+                    val redoOccupied = mutableMapOf<Int, MutableList<IntRange>>()
+                    val redoSelected = mutableListOf<Candidate>()
+                    for (c in singleOnly) {
+                        if (redoSelected.size >= targetCount) break
+                        val occ = redoOccupied.getOrPut(c.sentenceIdx) { mutableListOf() }
+                        val r = c.charStart until c.charEnd
+                        if (occ.none { it.first <= r.last && r.first <= it.last }) {
+                            redoSelected.add(c)
+                            occ.add(r)
+                        }
+                    }
+                    finalSelection = redoSelected.sortedWith(compareBy({ it.sentenceIdx }, { it.charStart }))
+                }
+            }
+        } else {
+            // 自动模式
+            val actualCount = when {
+                maxBlanks <= 5 -> selected.size
+                maxBlanks <= 20 -> maxOf(1, selected.size / 3)
+                else -> maxOf(1, selected.size / 4)
+            }
+
+            val sortedSelected = selected.take(actualCount).sortedWith(compareBy({ it.sentenceIdx }, { it.charStart }))
+
+            // 合并相邻的空
+            val merged = mutableListOf<Candidate>()
+            var mi = 0
+            while (mi < sortedSelected.size) {
+                var m = sortedSelected[mi]
+                var mj = mi + 1
+                while (mj < sortedSelected.size
+                    && sortedSelected[mj].sentenceIdx == m.sentenceIdx
+                    && sortedSelected[mj].charStart == m.charEnd
+                ) {
+                    m = Candidate(
+                        text = m.text + sortedSelected[mj].text,
+                        sentenceIdx = m.sentenceIdx,
+                        charStart = m.charStart,
+                        charEnd = sortedSelected[mj].charEnd,
+                        difficulty = maxOf(m.difficulty, sortedSelected[mj].difficulty)
+                    )
+                    mj++
+                }
+                merged.add(m)
+                mi = mj
+            }
+            finalSelection = merged
+        }
+
+        // 构建显示文本
+        val resultBlanks = mutableListOf<WordBlankInfo>()
+        val resultSentences = mutableListOf<WordClozeSentence>()
+        val sentenceBuilders = allSentences.map { StringBuilder(it) }.toMutableList()
+
+        // 从后往前替换（用复合比较器，避免整数键冲突）
+        for (m in finalSelection.sortedWith(
+            compareByDescending<Candidate> { it.sentenceIdx }.thenByDescending { it.charStart }
+        )) {
+            sentenceBuilders[m.sentenceIdx].replace(m.charStart, m.charEnd, "___")
+        }
+
+        var globalIdx = 0
+        for (sIdx in allSentences.indices) {
+            val displayText = sentenceBuilders[sIdx].toString()
+            val blankIndicesInSentence = mutableListOf<Int>()
+            for (m in finalSelection) {
+                if (m.sentenceIdx == sIdx) {
+                    resultBlanks.add(WordBlankInfo(globalIdx, m.text, m.charStart))
+                    blankIndicesInSentence.add(globalIdx)
+                    globalIdx++
+                }
+            }
+            resultSentences.add(WordClozeSentence(displayText, blankIndicesInSentence))
+        }
+
+        val displayText = resultSentences.joinToString("\n") { it.text }
+        return WordClozeResult(resultSentences, resultBlanks, displayText,
+            maxBlanks = maxBlanks, suggestedBlanks = suggestedBlanks)
+    }
+
+    private fun isChinese(ch: Char): Boolean {
+        return ch in '\u4e00'..'\u9fff' || ch in '\u3400'..'\u4dbf'
+    }
+
+    /** 统计句子中的英文单词数（用于字词挖空的最大空数计算） */
+    private fun countEnglishWords(s: String): Int {
+        var count = 0
+        var i = 0
+        while (i < s.length) {
+            if (s[i].isLetter() && !isChinese(s[i])) {
+                count++
+                while (i < s.length && s[i].isLetter()) i++
+            } else {
+                i++
+            }
+        }
+        return count
+    }
+
+    // ═══════════════════════════════════════════
+    //  古文虚词（F10）
+    // ═══════════════════════════════════════════
+
+    /** 常见文言文 / 白话文虚词（代词、介词、连词、助词、叹词） */
+    private val FUNCTION_WORDS = setOf(
+        // 单字虚词
+        "之", "乎", "者", "也", "矣", "焉", "哉", "耳", "耶", "欤", "邪",
+        "而", "以", "于", "其", "为", "所", "与", "则", "且", "乃", "虽",
+        "然", "若", "何", "孰", "安", "胡", "曷", "盍", "奚", "恶", "岂",
+        "惟", "盖", "夫", "故", "是", "或", "既", "及", "因", "自", "从",
+        "诸", "焉", "斯", "兹", "彼", "此", "莫", "勿", "毋", "未", "非",
+        "亦", "又", "尚", "犹", "但", "只", "仅", "方", "几", "庶",
+        "曾", "尝", "请", "敢", "窃", "辱", "幸", "伏", "忝",
+        // 白话文虚词
+        "的", "了", "在", "是", "有", "和", "就", "都", "也", "把", "被",
+        "让", "给", "向", "对", "从", "到", "用", "以", "为", "因", "所",
+        "与", "及", "或", "但", "而", "且", "虽", "然", "如", "若", "则"
+    )
+
+    /** 判断是否为虚词（单字直接查表；多字词检查首尾字是否虚词） */
+    fun isFunctionWord(word: String): Boolean {
+        if (word.length == 1) return word in FUNCTION_WORDS
+        if (word.isEmpty()) return false
+        // 多字词：检查首尾字是否为虚词
+        return word.first().toString() in FUNCTION_WORDS ||
+            word.last().toString() in FUNCTION_WORDS
+    }
+
+    // ═══════════════════════════════════════════
+    //  反向默写（段落打散 + 挖空 + 打乱顺序）
+    // ═══════════════════════════════════════════
+
+    /** 打乱后的分句（作为默写线索，已挖空） */
+    data class ShuffledClause(
+        val displayOrder: Int,      // 展示序号 0,1,2...
+        val originalIndex: Int,     // 对应原文分句索引
+        val originalText: String,  // 原文分句（完整，用于判分）
+        val displayText: String     // 挖好空的分句（含 ___，用于展示/复制）
+    )
+
+    /** 反向默写结果：原文分句列表（正确顺序）+ 打乱顺序的挖空分句线索 */
+    data class DictationResult(
+        val clauses: List<String>,                  // 原文分句列表（正确顺序）
+        val shuffledClauses: List<ShuffledClause>    // 打乱顺序的挖空分句
+    )
+
+    /** 反向默写切分标点：逗号/分号/顿号/句号/问号/叹号（标点保留在前一个分句末尾） */
+    private val DICTATION_CLAUSE_PUNCT = setOf(
+        '，', ',', ';', '；', '、', '。', '.', '！', '!', '？', '?', '…'
+    )
+
+    /**
+     * 反向默写：把段落按分句粒度（逗号/句号等）切分，每个分句挖 1 个空，
+     * 然后打乱顺序作为线索，让用户还原顺序并默写原文。
+     * @param content 原文（支持中英文混排）
+     */
+    fun generateDictation(content: String): DictationResult {
+        if (content.isBlank()) return DictationResult(emptyList(), emptyList())
+        // 先按句末标点切句（处理英文缩写/小数），再按逗号等切分句
+        val sentences = SentenceSplitter.split(content)
+        val clauses = mutableListOf<String>()
+        for (s in sentences) {
+            val parts = splitByDictationPunctuation(s)
+            clauses.addAll(parts.filter { it.isNotBlank() })
+        }
+        if (clauses.isEmpty()) return DictationResult(emptyList(), emptyList())
+
+        // 每个分句挖 1 个空，生成展示文本
+        val blankedClauses = clauses.map { blankOneWordInClause(it) }
+
+        // 打乱分句顺序
+        val indices = clauses.indices.toMutableList()
+        indices.shuffle()
+        val shuffled = indices.mapIndexed { displayOrder, origIdx ->
+            ShuffledClause(
+                displayOrder = displayOrder,
+                originalIndex = origIdx,
+                originalText = clauses[origIdx],
+                displayText = blankedClauses[origIdx]
+            )
+        }
+        return DictationResult(clauses, shuffled)
+    }
+
+    // ═══════════════════════════════════════════
+    //  自定义挖空构造（编辑器选点 → 确定性结果）
+    // ═══════════════════════════════════════════
+
+    /**
+     * 自定义句子挖空：按「句索引 → 句内区间列表」构造句子挖空结果。
+     * 区间自动合并相邻/重叠、过滤越界；displayText 用与 generateSentenceCloze
+     * 同款的 "[N] ___" 标记（句内从后往前替换，避免偏移错位）。
+     */
+    fun buildCustomSentenceCloze(
+        content: String,
+        rangesBySentence: Map<Int, List<IntRange>>
+    ): SentenceClozeResult {
+        val sentences = SentenceSplitter.split(content)
+        // 规范化：越界过滤 + 相邻/重叠合并（统一收敛到 RangeOps，保存/应用共用同一口径）。
+        // 注意：区间 first/last 是【句内字符偏移】，而句子索引是 map 的 key，两者不可混用。
+        // 历史 bug：用 r.first（句内偏移）去索引 sentences 取长度 —— 短文章会取到空串，
+        // 使 (r.last+1).coerceIn(a+1, 0) 抛出 "Cannot coerce to an empty range" 崩溃；
+        // 长文章则拿到别的句子长度做裁剪，导致挖空范围与用户所选不符（静默错位）。
+        val normalized = rangesBySentence.mapValues { (sentenceIndex, ranges) ->
+            val len = sentences.getOrElse(sentenceIndex) { "" }.length
+            RangeOps.normalizeClampedRanges(len, ranges)   // 句子不存在（len==0）时返回空
+        }.filterValues { it.isNotEmpty() }
+
+        data class Sel(val sIdx: Int, val range: IntRange, val text: String)
+        val all = normalized.entries.sortedBy { it.key }.flatMap { (s, ranges) ->
+            ranges.map { Sel(s, it, sentences[s].substring(it.first, it.last + 1)) }
+        }
+
+        // 编号 + 构造 SentenceBlankInfo
+        val blanks = all.mapIndexed { idx, sel ->
+            SentenceBlankInfo(
+                index = idx,
+                originalText = sel.text,
+                sentenceIndex = sel.sIdx,
+                startInSentence = sel.range.first,
+                endInSentence = sel.range.last + 1
+            )
+        }
+
+        // displayText：句内从后往前替换为 "[N] ___"（与自动生成共用同一构造）
+        return SentenceClozeResult(sentences, blanks, buildSentenceDisplayText(sentences, blanks))
+    }
+
+    /**
+     * 自定义反向默写：仅对选中句子做分句切分 + 每分句挖一词 + 打乱，
+     * 未选中句子不参与。与 generateDictation 同构，仅分句来源限定为选中句。
+     */
+    fun buildCustomDictation(content: String, selectedSentences: Set<Int>): DictationResult {
+        if (selectedSentences.isEmpty()) return DictationResult(emptyList(), emptyList())
+        val sentences = SentenceSplitter.split(content)
+        val clauses = mutableListOf<String>()
+        for (sIdx in sentences.indices) {
+            if (sIdx !in selectedSentences) continue
+            for (part in splitByDictationPunctuation(sentences[sIdx])) {
+                if (part.isNotBlank()) clauses.add(part)
+            }
+        }
+        if (clauses.isEmpty()) return DictationResult(emptyList(), emptyList())
+        val blankedClauses = clauses.map { blankOneWordInClause(it) }
+        val indices = clauses.indices.toMutableList()
+        indices.shuffle()
+        val shuffled = indices.mapIndexed { displayOrder, origIdx ->
+            ShuffledClause(
+                displayOrder = displayOrder,
+                originalIndex = origIdx,
+                originalText = clauses[origIdx],
+                displayText = blankedClauses[origIdx]
+            )
+        }
+        return DictationResult(clauses, shuffled)
+    }
+
+    /** 按反向默写分句标点切分（标点保留在前一个分句末尾） */
+    private fun splitByDictationPunctuation(text: String): List<String> {
+        val result = mutableListOf<String>()
+        val current = StringBuilder()
+        for (ch in text) {
+            current.append(ch)
+            if (ch in DICTATION_CLAUSE_PUNCT) {
+                result.add(current.toString())
+                current.clear()
+            }
+        }
+        if (current.isNotEmpty()) result.add(current.toString())
+        return result.ifEmpty { listOf(text) }
+    }
+
+    /**
+     * 在分句中挖 1 个空：优先挖难度最高的中文字符；无汉字时挖英文单词；
+     * 都没有则原样返回。挖掉的内容替换为 ___。供本地与 AI 挖空兜底共用。
+     */
+    internal fun blankOneWordInClause(clause: String): String {
+        if (clause.isBlank()) return clause
+        // 找难度最高的中文字符
+        var bestIdx = -1
+        var bestDiff = -1f
+        for (i in clause.indices) {
+            if (isChinese(clause[i])) {
+                val d = DifficultyCalculator.calculateCharDifficulty(clause[i])
+                if (d > bestDiff) {
+                    bestDiff = d
+                    bestIdx = i
+                }
+            }
+        }
+        if (bestIdx >= 0) {
+            // 扩展挖 1-2 字：若相邻也是高难度汉字，合并挖掉
+            var end = bestIdx + 1
+            if (end < clause.length && isChinese(clause[end]) &&
+                DifficultyCalculator.calculateCharDifficulty(clause[end]) >= bestDiff * 0.8f
+            ) {
+                end++
+            }
+            return clause.substring(0, bestIdx) + "___" + clause.substring(end)
+        }
+        // 无汉字：挖第一个英文单词
+        val wordMatch = ENGLISH_WORD_REGEX.find(clause)
+        if (wordMatch != null) {
+            return clause.replaceRange(wordMatch.range.first, wordMatch.range.last + 1, "___")
+        }
+        // 都没有：原样返回
+        return clause
+    }
+
+    // ── 挖空结果 JSON 序列化：供「继续练习」恢复上次挖好的空 ──
+    fun sentenceClozeToJson(r: SentenceClozeResult): String {
+        val o = JSONObject()
+        o.put("sentences", JSONArray(r.sentences))
+        val blanksArr = JSONArray()
+        r.blanks.forEach { b ->
+            blanksArr.put(JSONObject().apply {
+                put("index", b.index); put("originalText", b.originalText)
+                put("sentenceIndex", b.sentenceIndex); put("startInSentence", b.startInSentence)
+                put("endInSentence", b.endInSentence)
+            })
+        }
+        o.put("blanks", blanksArr)
+        o.put("displayText", r.displayText)
+        return o.toString()
+    }
+
+    fun sentenceClozeFromJson(json: String): SentenceClozeResult? = runCatching {
+        val o = JSONObject(json)
+        val sArr = o.getJSONArray("sentences")
+        val sentences = List(sArr.length()) { sArr.getString(it) }
+        val bArr = o.getJSONArray("blanks")
+        val blanks = List(bArr.length()) { i ->
+            val b = bArr.getJSONObject(i)
+            SentenceBlankInfo(b.getInt("index"), b.getString("originalText"), b.getInt("sentenceIndex"), b.getInt("startInSentence"), b.getInt("endInSentence"))
+        }
+        SentenceClozeResult(sentences, blanks, o.getString("displayText"))
+    }.getOrNull()
+
+    fun wordClozeToJson(r: WordClozeResult): String {
+        val o = JSONObject()
+        val sArr = JSONArray()
+        r.sentences.forEach { s ->
+            sArr.put(JSONObject().apply { put("text", s.text); put("blanks", JSONArray(s.blanks)) })
+        }
+        o.put("sentences", sArr)
+        val bArr = JSONArray()
+        r.blanks.forEach { b ->
+            bArr.put(JSONObject().apply { put("index", b.index); put("originalChar", b.originalChar); put("position", b.position) })
+        }
+        o.put("blanks", bArr)
+        o.put("displayText", r.displayText); o.put("maxBlanks", r.maxBlanks); o.put("suggestedBlanks", r.suggestedBlanks)
+        return o.toString()
+    }
+
+    fun wordClozeFromJson(json: String): WordClozeResult? = runCatching {
+        val o = JSONObject(json)
+        val sArr = o.getJSONArray("sentences")
+        val sentences = List(sArr.length()) { i ->
+            val s = sArr.getJSONObject(i)
+            val bl = s.getJSONArray("blanks")
+            WordClozeSentence(s.getString("text"), List(bl.length()) { bl.getInt(it) })
+        }
+        val bArr = o.getJSONArray("blanks")
+        val blanks = List(bArr.length()) { i ->
+            val b = bArr.getJSONObject(i)
+            WordBlankInfo(b.getInt("index"), b.getString("originalChar"), b.getInt("position"))
+        }
+        WordClozeResult(sentences, blanks, o.getString("displayText"), o.getInt("maxBlanks"), o.getInt("suggestedBlanks"))
+    }.getOrNull()
+
+    fun dictationToJson(r: DictationResult): String {
+        val o = JSONObject()
+        o.put("clauses", JSONArray(r.clauses))
+        val shArr = JSONArray()
+        r.shuffledClauses.forEach { s ->
+            shArr.put(JSONObject().apply {
+                put("displayOrder", s.displayOrder); put("originalIndex", s.originalIndex)
+                put("originalText", s.originalText); put("displayText", s.displayText)
+            })
+        }
+        o.put("shuffledClauses", shArr)
+        return o.toString()
+    }
+
+    fun dictationFromJson(json: String): DictationResult? = runCatching {
+        val o = JSONObject(json)
+        val cArr = o.getJSONArray("clauses")
+        val clauses = List(cArr.length()) { cArr.getString(it) }
+        val shArr = o.getJSONArray("shuffledClauses")
+        val shuffled = List(shArr.length()) { i ->
+            val s = shArr.getJSONObject(i)
+            ShuffledClause(s.getInt("displayOrder"), s.getInt("originalIndex"), s.getString("originalText"), s.getString("displayText"))
+        }
+        DictationResult(clauses, shuffled)
+    }.getOrNull()
+}

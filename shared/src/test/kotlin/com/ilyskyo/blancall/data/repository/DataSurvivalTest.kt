@@ -1,0 +1,267 @@
+// Copyright (c) 2026 ilyskyo
+// SPDX-License-Identifier: MIT
+
+package com.ilyskyo.blancall.data.repository
+
+import com.ilyskyo.blancall.data.database.ArticleStorage
+import com.ilyskyo.blancall.data.model.Article
+import com.ilyskyo.blancall.data.model.PracticeRecord
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.io.File
+import java.nio.file.Files
+
+/**
+ * 数据存亡矩阵：并发写入不丢 + 损坏恢复（[RecordRepository] / [ArticleStorage]）。
+ *
+ * 隔离说明：两个类都是**构造器实例**（非单例），每个用例使用独立临时目录，互不干扰。
+ *
+ * 覆盖：
+ * - 多线程并发 insert 后「内存条数 == 磁盘条数 == id 去重数」；
+ * - 主文件损坏 → 从 `.bak` 回读（恢复到的正是上一版内容）；
+ * - 主文件与备份全损坏 → 安全空起步且可继续写入（不崩溃）。
+ */
+class RecordRepositorySurvivalTest {
+
+    private fun record(articleId: Long) = PracticeRecord(
+        articleId = articleId,
+        mode = "WORD",
+        totalBlanks = 1,
+        correctCount = 1,
+    )
+
+    /** 读盘断言用：按文件实际格式解析（兼容旧数组与 JSONL）。 */
+    private fun readDiskObjects(path: File): List<JSONObject> {
+        val text = path.readText()
+        if (text.trimStart().startsWith("[")) {
+            val arr = JSONArray(text)
+            return (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+        }
+        return text.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .mapNotNull { runCatching { JSONObject(it) }.getOrNull() }
+            .toList()
+    }
+
+    @Test
+    fun `并发 insert 不丢记录且磁盘与内存一致`() {
+        val path = File(Files.createTempDirectory("blancall-records-concurrency").toFile(), "records.json")
+        val repo = RecordRepository(path.absolutePath)
+        val threads = 8
+        val perThread = 25
+        runBlocking {
+            repo.awaitLoaded()
+            (0 until threads).map { t ->
+                async(Dispatchers.Default) {
+                    repeat(perThread) { i ->
+                        repo.insert(record(articleId = t * 1000L + i))
+                    }
+                }
+            }.awaitAll()
+        }
+        val expected = threads * perThread
+        assertEquals("内存条数", expected, repo.records.value.size)
+        val disk = readDiskObjects(path)
+        assertEquals("磁盘条数", expected, disk.size)
+        val diskIds = disk.map { it.getLong("id") }.toSet()
+        assertEquals("磁盘 id 不应重复", expected, diskIds.size)
+    }
+
+    @Test
+    fun `主文件损坏时从备份恢复记录`() {
+        val dir = Files.createTempDirectory("blancall-records-bak").toFile()
+        val path = File(dir, "records.json")
+        runBlocking {
+            val repo = RecordRepository(path.absolutePath)
+            repo.awaitLoaded()
+            repo.insert(record(articleId = 1))
+            repo.insert(record(articleId = 2))
+            // 追加路径不轮换 .bak：触发一次整体重写（删除不存在的文章）
+            // 让当前全量内容轮换入 .bak；再追加一条，使 .bak 与主文件拉开差异
+            repo.deleteByArticleId(9999)
+            repo.insert(record(articleId = 3))
+        }
+        path.writeText("{ 不是合法 JSON")
+        runBlocking {
+            val repo2 = RecordRepository(path.absolutePath)
+            repo2.awaitLoaded()
+            // 回读到的是上一版整体重写内容（articleId 1 与 2；不含后来追加的 3）
+            assertEquals(setOf(1L, 2L), repo2.records.value.map { it.articleId }.toSet())
+        }
+    }
+
+    @Test
+    fun `主文件与备份全损坏时安全空起步且可继续写入`() {
+        val dir = Files.createTempDirectory("blancall-records-broken").toFile()
+        val path = File(dir, "records.json")
+        runBlocking {
+            val repo = RecordRepository(path.absolutePath)
+            repo.awaitLoaded()
+            repo.insert(record(articleId = 1))
+            repo.insert(record(articleId = 2))
+        }
+        path.writeText("{ broken")
+        File(dir, "records.json.bak").writeText("{{ also broken")
+        runBlocking {
+            val repo2 = RecordRepository(path.absolutePath)
+            repo2.awaitLoaded()
+            assertTrue("全损坏应空起步", repo2.records.value.isEmpty())
+            repo2.insert(record(articleId = 9))
+            assertEquals(1, repo2.records.value.size)
+            // 损坏文件应被整体重写覆盖（而不是被追加成「垃圾 + 有效行」的混合体）
+            assertFalse("重写后不应是旧数组格式", path.readText().trimStart().startsWith("["))
+            assertEquals("损坏文件应被新内容覆盖", 1, readDiskObjects(path).size)
+        }
+    }
+}
+
+class ArticleStorageSurvivalTest {
+
+    private fun article(title: String) = Article(title = title, content = "正文内容 $title")
+
+    @Test
+    fun `并发 insert 不丢文章且磁盘与内存一致`() {
+        val path = File(Files.createTempDirectory("blancall-articles-concurrency").toFile(), "articles.json")
+        val storage = ArticleStorage(path.absolutePath)
+        val threads = 8
+        val perThread = 25
+        runBlocking {
+            storage.awaitLoaded()
+            (0 until threads).map { t ->
+                async(Dispatchers.Default) {
+                    repeat(perThread) { i ->
+                        storage.insert(article("文章-$t-$i"))
+                    }
+                }
+            }.awaitAll()
+        }
+        val expected = threads * perThread
+        assertEquals("内存条数", expected, runBlocking { storage.articles.first() }.size)
+        val arr = JSONArray(path.readText())
+        assertEquals("磁盘条数", expected, arr.length())
+        val diskIds = (0 until arr.length()).map { arr.getJSONObject(it).getLong("id") }.toSet()
+        assertEquals("磁盘 id 不应重复", expected, diskIds.size)
+    }
+
+    @Test
+    fun `主文件损坏时从备份恢复文章`() {
+        val dir = Files.createTempDirectory("blancall-articles-bak").toFile()
+        val path = File(dir, "articles.json")
+        runBlocking {
+            val storage = ArticleStorage(path.absolutePath)
+            storage.awaitLoaded()
+            storage.insert(article("第一版"))
+            storage.insert(article("第二版")) // 第一版轮换入 .bak
+        }
+        path.writeText("{ 不是合法 JSON")
+        runBlocking {
+            val storage2 = ArticleStorage(path.absolutePath)
+            storage2.awaitLoaded()
+            assertEquals(listOf("第一版"), storage2.articles.first().map { it.title })
+        }
+    }
+
+    @Test
+    fun `主文件与备份全损坏时安全空起步且可继续写入`() {
+        val dir = Files.createTempDirectory("blancall-articles-broken").toFile()
+        val path = File(dir, "articles.json")
+        runBlocking {
+            val storage = ArticleStorage(path.absolutePath)
+            storage.awaitLoaded()
+            storage.insert(article("甲"))
+            storage.insert(article("乙")) // 生成 .bak
+        }
+        path.writeText("{ broken")
+        File(dir, "articles.json.bak").writeText("{{ also broken")
+        runBlocking {
+            val storage2 = ArticleStorage(path.absolutePath)
+            storage2.awaitLoaded()
+            assertTrue("全损坏应空起步", storage2.articles.first().isEmpty())
+            storage2.insert(article("丙"))
+            assertEquals(1, storage2.articles.first().size)
+            assertEquals("损坏文件应被新内容覆盖", 1, JSONArray(path.readText()).length())
+        }
+    }
+}
+
+/**
+ * 首页布局存储的损坏恢复（[HomeLayoutStore] 为进程级单例：仅本类使用，不会与其它测试类抢目录）。
+ */
+class HomeLayoutStoreSurvivalTest {
+
+    companion object {
+        private val dir = Files.createTempDirectory("blancall-home-layout-survival").toFile()
+        private val store = HomeLayoutStore.getInstance(dir)
+    }
+
+    private val cardA = HomeLayoutStore.Card(id = "due", type = HomeLayoutStore.CardType.DUE)
+    private val cardB = HomeLayoutStore.Card(id = "add", type = HomeLayoutStore.CardType.ADD_ARTICLE)
+
+    @Test
+    fun `主文件损坏时回读备份并保留损坏现场`() {
+        store.saveCards(listOf(cardA))            // v1（首写）
+        store.saveCards(listOf(cardA, cardB))     // v2；v1 轮换入 .bak
+        val file = File(dir, "home_layout.json")
+        val healthy = file.readText()
+        file.writeText("{ 损坏的布局")
+
+        // 读：主损坏 → 现场另存 .corrupt-* → 回读 .bak（只有 cardA）
+        assertEquals(listOf("due"), store.getCards().map { it.id })
+        val corrupt = dir.listFiles { f -> f.name.startsWith("home_layout.json.corrupt-") }
+        assertTrue("损坏现场应被另存保留", corrupt != null && corrupt.isNotEmpty())
+
+        // 收尾：写回健康内容，避免影响其它用例
+        file.writeText(healthy)
+    }
+
+    @Test
+    fun `主文件损坏且无备份时回退默认布局但拒绝保存（不得清空首页）`() {
+        val file = File(dir, "home_layout.json")
+        val bak = File(dir, "home_layout.json.bak")
+        val healthy = if (file.exists()) file.readText() else ""
+        file.writeText("{ 损坏")
+        bak.delete()
+
+        // 无备份 → 空库 → getCards 回退默认布局（不崩溃、不为空）
+        val recovered = store.getCards()
+        assertTrue("应回退默认布局而非空列表", recovered.isNotEmpty())
+
+        // 拒绝写盘。旧断言「可重新保存」固化了坏行为：损坏现场已被 preserveCorruptFile 改名搬走，
+        // 此时写盘会把用户摆好的整个首页换成这一张卡
+        store.saveCards(listOf(cardA))
+        assertFalse("损坏且无备份时必须拒绝写盘", file.exists())
+
+        // 收尾：还原健康内容（成功解析清除粘性标记），并让缓存跟着磁盘走
+        if (healthy.isBlank()) file.delete() else file.writeText(healthy)
+        store.getCards()
+    }
+
+    /**
+     * 解析缓存必须跟着磁盘走：「一键导入备份」是直接往 filesDir 写文件、不经过
+     * [HomeLayoutStore] 的，若只按「本类写过盘」失效，导入完成后首页仍会显示旧布局。
+     */
+    @Test
+    fun `外部直接写盘后读到的是新布局`() {
+        val file = File(dir, "home_layout.json")
+        store.saveCards(listOf(cardA, cardB))
+        val two = file.readText()
+
+        store.saveCards(listOf(cardA))
+        assertEquals(1, store.getCards().size)   // 先建立「只剩一张卡」的缓存
+
+        file.writeText(two)                      // 模拟导入：绕过 store 直接落盘
+        assertEquals(2, store.getCards().size)
+
+        store.saveCards(listOf(cardA))           // 收尾，别影响其它用例
+    }
+}

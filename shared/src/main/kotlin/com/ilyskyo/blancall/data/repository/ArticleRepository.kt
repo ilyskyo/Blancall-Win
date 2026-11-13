@@ -1,0 +1,53 @@
+// Copyright (c) 2026 ilyskyo
+// SPDX-License-Identifier: MIT
+
+package com.ilyskyo.blancall.data.repository
+
+import com.ilyskyo.blancall.data.database.ArticleStorage
+import com.ilyskyo.blancall.data.model.Article
+import kotlinx.coroutines.flow.Flow
+
+class ArticleRepository(filePath: String) {
+    private val storage = ArticleStorage.getInstance(filePath)
+
+    val allArticles: Flow<List<Article>> = storage.articles
+
+    /** 当前内存快照（提醒等非收集型消费者用；首载完成前为空表）。 */
+    val snapshot: List<Article> get() = storage.snapshot
+
+    /** 挂起直到首次读盘完成；桌面小组件等非页面消费者需要它避免读到空库。 */
+    suspend fun awaitLoaded() = storage.awaitLoaded()
+
+    suspend fun getArticleById(id: Long): Article? = storage.getById(id)
+
+    suspend fun insert(article: Article): Long = storage.insert(article)
+
+    /** 批量插入：一次整库写盘，供内容包/批量导入使用。 */
+    suspend fun insertAll(articles: List<Article>): List<Long> = storage.insertAll(articles)
+
+    suspend fun update(article: Article) = storage.update(article)
+
+    suspend fun delete(article: Article) = storage.delete(article)
+
+    /** 批量删除：一次整库写盘，供多选删除使用。 */
+    suspend fun deleteAll(ids: Set<Long>) = storage.deleteAll(ids)
+
+    /** 备份导入后重载（B1-3）：转发到底层存储；等待首载并串行化写盘 */
+    suspend fun reload() = storage.reload()
+
+    companion object {
+        @Volatile
+        private var instance: ArticleRepository? = null
+
+        /**
+         * 单例获取，与 RecordRepository.getInstance 保持一致。
+         * 构造函数保留以兼容现有调用方，但推荐改用 getInstance。
+         * 底层委托 ArticleStorage.getInstance 共享同一存储。
+         */
+        fun getInstance(filePath: String): ArticleRepository {
+            return instance ?: synchronized(this) {
+                instance ?: ArticleRepository(filePath).also { instance = it }
+            }
+        }
+    }
+}

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+      Id="*"
+      Name="Blancall"
+      Language="1033"
+      Version="7.6.1"
+      Manufacturer="ilyskyo"
+      UpgradeCode="2F7F6C25-9A7B-4F53-8D0E-6A0A1E8A7C11">
+
+    <Package
+        InstallerVersion="500"
+        Compressed="yes"
+        InstallScope="perUser"
+        InstallPrivileges="limited"
+        Platform="x64" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Blancall is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon" SourceFile="..\..\desktop\build\compose\default-resources\1.10.3\default-icon-windows.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/ilyskyo/blancall" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="ProgramsFolder" Name="Programs">
+          <Directory Id="INSTALLDIR" Name="Blancall" />
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="AppProgramMenu" Name="Blancall" />
+      </Directory>
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <DirectoryRef Id="AppProgramMenu">
+      <Component Id="StartMenuShortcut" Guid="7C1F3A42-9B6E-4A3E-9C5A-2D8B1E4F6A21">
+        <Shortcut
+            Id="StartMenuShortcut"
+            Name="Blancall"
+            Description="Blancall - local-first cloze memorization"
+            Target="[INSTALLDIR]Blancall.vbs"
+            WorkingDirectory="INSTALLDIR"
+            Icon="AppIcon" />
+        <RemoveFolder Id="RemoveAppProgramMenu" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\ilyskyo\Blancall" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Guid="AF3D2C81-5E47-4B19-B2D6-6C0A9E7F3B42">
+        <Shortcut
+            Id="DesktopShortcut"
+            Name="Blancall"
+            Description="Blancall - local-first cloze memorization"
+            Target="[INSTALLDIR]Blancall.vbs"
+            WorkingDirectory="INSTALLDIR"
+            Icon="AppIcon" />
+        <RegistryValue Root="HKCU" Key="Software\ilyskyo\Blancall" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="MainFeature" Title="Blancall" Level="1" Display="expand">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+  </Product>
+</Wix>

@@ -1,0 +1,313 @@
+// Copyright (c) 2026 ilyskyo
+// SPDX-License-Identifier: MIT
+
+package com.ilyskyo.blancall.algorithm
+
+import com.ilyskyo.blancall.data.model.Article
+import com.ilyskyo.blancall.data.model.PracticeRecord
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.ZoneOffset
+
+/** 今日计划 / 时间预算 / 调度理由的规则守卫：改优先级或阈值必须在这里显性改断言。 */
+class StudyCoachTest {
+
+    private val day = 24L * 60 * 60 * 1000
+    private val now = 1_800_000_000_000L
+
+    private fun due(id: Long, dueAt: Long = now - day, blanks: Int = 10, lapses: Int = 0) =
+        StudyCoach.DueArticle(
+            articleId = id,
+            title = "篇$id",
+            due = dueAt,
+            reviewCount = 3,
+            lapses = lapses,
+            estimatedBlanks = blanks,
+        )
+
+    @Test
+    fun `未完成练习排第一，到期文章其次，最多三条`() {
+        val plan = StudyCoach.buildPlan(
+            StudyCoach.Input(
+                now = now,
+                dueArticles = listOf(due(1), due(2), due(3)),
+                resumables = listOf(
+                    StudyCoach.Resumable(9, "未完成", "SENTENCE", 3, 10, now - 1000)
+                ),
+                dueSentenceCount = 4,
+            )
+        )
+        assertEquals(
+            listOf(StudyCoach.Kind.RESUME, StudyCoach.Kind.REVIEW_ARTICLE, StudyCoach.Kind.SENTENCE_CARDS),
+            plan.items.map { it.kind }
+        )
+        assertEquals(3, plan.items.size)
+        assertEquals(9L, plan.items[0].articleId)
+        assertEquals(1L, plan.items[1].articleId)
+        assertEquals(StudyCoach.Kind.SENTENCE_CARDS, plan.items[2].kind)
+    }
+
+    @Test
+    fun `同一篇文章不会同时以到期和薄弱出现`() {
+        val plan = StudyCoach.buildPlan(
+            StudyCoach.Input(
+                now = now,
+                dueArticles = listOf(due(7)),
+                weakestArticleId = 7L,
+                weakestArticleTitle = "篇7",
+                weakMistakeCount = 3,
+            )
+        )
+        assertEquals(1, plan.items.count { it.articleId == 7L })
+        assertEquals(StudyCoach.Kind.REVIEW_ARTICLE, plan.items.first().kind)
+    }
+
+    @Test
+    fun `没有到期内容时按薄弱、句子卡、错题集训依次补位`() {
+        val plan = StudyCoach.buildPlan(
+            StudyCoach.Input(
+                now = now,
+                weakestArticleId = 5L,
+                weakestArticleTitle = "薄弱",
+                weakMistakeCount = 4,
+                mistakeCount = 4,
+                dueSentenceCount = 6,
+                dailyPracticeGoal = 3,
+                todayPracticeCount = 1,
+            )
+        )
+        assertEquals(3, plan.items.size)
+        assertEquals(StudyCoach.Kind.WEAK_ARTICLE, plan.items[0].kind)
+        assertEquals(StudyCoach.Kind.SENTENCE_CARDS, plan.items[1].kind)
+        assertEquals(StudyCoach.Kind.MISTAKE_DRILL, plan.items[2].kind)
+    }
+
+    @Test
+    fun `只剩次数目标时补一条每日目标`() {
+        val plan = StudyCoach.buildPlan(
+            StudyCoach.Input(
+                now = now,
+                dailyPracticeGoal = 3,
+                todayPracticeCount = 1,
+            )
+        )
+        assertEquals(listOf(StudyCoach.Kind.DAILY_GOAL), plan.items.map { it.kind })
+        assertEquals(2, plan.items.single().count)
+    }
+
+    @Test
+    fun `时间预算宁可少排也不超：85% 阈值`() {
+        // 每篇 10 空 × 8 秒 × 1.1 ≈ 1.47 分钟；15 分钟预算应只装到接近 12.75 分钟
+        val input = StudyCoach.Input(
+            now = now,
+            dueArticles = (1L..20L).map { due(it, dueAt = now - it * 1000, blanks = 10) },
+            secondsPerBlank = 8.0,
+        )
+        val budget = StudyCoach.budget(input, 15)
+        assertEquals(15, budget.requestedMinutes)
+        assertTrue("应装下至少一篇", budget.articleIds.isNotEmpty())
+        assertTrue("不应把 15 分钟预算排成 20 分钟", budget.estimatedMinutes <= 15)
+        assertTrue("应按到期先后", budget.articleIds.first() == 20L)
+        assertEquals(0, budget.sentenceCardCount)
+    }
+
+    @Test
+    fun `只有句子卡时按句数估算并给出本次上限`() {
+        // 40 句到期、无文章、5 分钟：每句 0.4 分钟 → 12 句 ≈ 4.8 分钟
+        val budget = StudyCoach.budget(
+            StudyCoach.Input(now = now, dueSentenceCount = 40),
+            5,
+        )
+        assertTrue(budget.articleIds.isEmpty())
+        assertEquals(12, budget.sentenceCardCount)
+        assertEquals(5, budget.estimatedMinutes)
+        assertFalse(budget.empty)
+    }
+
+    @Test
+    fun `有文章可排时预算只承诺文章不承诺句子卡`() {
+        val budget = StudyCoach.budget(
+            StudyCoach.Input(
+                now = now,
+                dueArticles = listOf(due(1)),
+                dueSentenceCount = 20,
+            ),
+            15,
+        )
+        assertEquals(listOf(1L), budget.articleIds)
+        assertEquals(0, budget.sentenceCardCount)
+    }
+
+    @Test
+    fun `没有文章也没有句子时预算为空`() {
+        val budget = StudyCoach.budget(StudyCoach.Input(now = now), 10)
+        assertTrue(budget.empty)
+        assertEquals(0, budget.sentenceCardCount)
+        assertEquals(0, budget.estimatedMinutes)
+    }
+
+    @Test
+    fun `时间预算先装未完成练习`() {
+        val budget = StudyCoach.budget(
+            StudyCoach.Input(
+                now = now,
+                dueArticles = listOf(due(1)),
+                resumables = listOf(
+                    StudyCoach.Resumable(9, "未完成", "WORD", 9, 10, now)
+                ),
+            ),
+            5
+        )
+        assertEquals(listOf(9L, 1L), budget.articleIds)
+    }
+
+    @Test
+    fun `速度估算按空数加权并夹在 3 到 30 秒`() {
+        assertEquals(5.0, StudyCoach.secondsPerBlank(listOf(10_000L to 2, 50_000L to 10)), 0.001)
+        assertEquals(3.0, StudyCoach.secondsPerBlank(listOf(100L to 10)), 0.001)
+        assertEquals(30.0, StudyCoach.secondsPerBlank(listOf(600_000L to 10)), 0.001)
+        assertEquals(
+            StudyCoach.DEFAULT_SECONDS_PER_BLANK,
+            StudyCoach.secondsPerBlank(listOf(0L to 10)),
+            0.001
+        )
+    }
+
+    @Test
+    fun `调度理由：忘过多次优先于间隔与逾期`() {
+        val state = FsrsEngine.CardState(
+            due = now - 10 * day,
+            lastReview = now - 30 * day,
+            reviewCount = 5,
+            lapses = 3,
+        )
+        val reason = StudyCoach.reasonOf(state, now)
+        assertEquals(StudyCoach.ReasonKind.LAPSED, reason.kind)
+        assertEquals(3, reason.count)
+    }
+
+    @Test
+    fun `调度理由：没有练过是第一次练习，不是复习`() {
+        assertEquals(
+            StudyCoach.ReasonKind.FIRST_PRACTICE,
+            StudyCoach.reasonOf(null, now).kind
+        )
+        assertEquals(
+            StudyCoach.ReasonKind.FIRST_PRACTICE,
+            StudyCoach.reasonOf(FsrsEngine.CardState(reviewCount = 0), now).kind
+        )
+    }
+
+    @Test
+    fun `有旧记录但没有FSRS状态时按计划到期而不是第一次练习`() {
+        val reason = StudyCoach.reasonOf(
+            FsrsEngine.CardState(due = now - day, lastReview = 0L, reviewCount = 0),
+            now,
+            hasPractice = true,
+        )
+        assertEquals(StudyCoach.ReasonKind.OVERDUE, reason.kind)
+        assertEquals(1, reason.days)
+    }
+
+    @Test
+    fun `当天早些时候到期不算逾期一天`() {
+        val zone = ZoneId.systemDefault()
+        val day = LocalDate.of(2026, 11, 1)
+        val nowAt = day.atTime(20, 0).atZone(zone).toInstant().toEpochMilli()
+        val dueAt = day.atTime(8, 0).atZone(zone).toInstant().toEpochMilli()
+        val trained = FsrsEngine.CardState(
+            due = dueAt, lastReview = dueAt, reviewCount = 2, stability = 1.0,
+        )
+        assertFalse(
+            "分组是「今天」，理由就不能说逾期一天",
+            StudyCoach.reasonOf(trained, nowAt).kind == StudyCoach.ReasonKind.OVERDUE,
+        )
+        assertFalse(
+            "旧记录同样按日历日判断",
+            StudyCoach.reasonOf(trained.copy(reviewCount = 0), nowAt, hasPractice = true).kind ==
+                StudyCoach.ReasonKind.OVERDUE,
+        )
+    }
+
+    @Test
+    fun `只有旧练习记录没有FSRS状态的文章也算练过`() {
+        val record = PracticeRecord(
+            articleId = 2L,
+            mode = "SENTENCE",
+            totalBlanks = 2,
+            correctCount = 2,
+            timestamp = now - day,
+        )
+        val snapshot = StudyCoach.snapshot(
+            StudyCoach.Source(
+                articles = listOf(Article(id = 2L, title = "旧记录", content = "文".repeat(400))),
+                records = listOf(record),
+                states = emptyMap(),
+                enrolled = mapOf(2L to now - day),
+            ),
+            now = now,
+        )
+        val due = snapshot.input.dueArticles.single()
+        assertTrue("有记录就不是未开始", due.hasPractice)
+        assertEquals(
+            "有旧记录应按复习排，而不是开始第一遍",
+            StudyCoach.Kind.REVIEW_ARTICLE,
+            StudyCoach.buildPlan(snapshot.input).items.single().kind,
+        )
+    }
+
+    @Test
+    fun `考试倒排只给两态且按每日容量判断`() {
+        val today = LocalDate.of(2026, 10, 25)
+        val nowAt = today.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+        val onTrack = StudyCoach.buildPlan(
+            StudyCoach.Input(
+                now = nowAt,
+                dueArticles = List(5) { due(it.toLong() + 1) },
+                dailyPracticeGoal = 3,
+                examEpochDay = today.plusDays(30).toEpochDay(),
+                zone = ZoneOffset.UTC,
+            )
+        )
+        assertEquals(30, onTrack.examDaysLeft)
+        assertEquals(StudyCoach.ExamPace.ON_TRACK, onTrack.examPace)
+
+        val behind = StudyCoach.buildPlan(
+            StudyCoach.Input(
+                now = nowAt,
+                dueArticles = List(5) { due(it.toLong() + 1) },
+                weakMistakeCount = 10,
+                mistakeCount = 100,
+                dailyPracticeGoal = 1,
+                examEpochDay = today.plusDays(2).toEpochDay(),
+                zone = ZoneOffset.UTC,
+            )
+        )
+        assertEquals(StudyCoach.ExamPace.BEHIND, behind.examPace)
+    }
+
+    @Test
+    fun `时长目标真的参与计划条目数`() {
+        val input = StudyCoach.Input(
+            now = now,
+            dueArticles = listOf(due(1, blanks = 120)),
+            weakestArticleId = 2,
+            weakestArticleTitle = "薄弱篇",
+            weakMistakeCount = 100,
+            dueSentenceCount = 100,
+            mistakeCount = 100,
+        )
+        val short = StudyCoach.buildPlan(input.copy(goalMinutes = 1))
+        val long = StudyCoach.buildPlan(input.copy(goalMinutes = 600))
+        assertEquals("1 分钟目标至少保留一条，不能给空计划", 1, short.items.size)
+        assertEquals("足够长的预算应放下全部条目", 3, long.items.size)
+        assertTrue(
+            "短预算的估算时长不能超过长预算：${short.estimatedMinutes} vs ${long.estimatedMinutes}",
+            short.estimatedMinutes <= long.estimatedMinutes
+        )
+    }
+}
