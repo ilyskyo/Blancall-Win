@@ -6,9 +6,11 @@
 - 文档状态：Phase 0 提案；ADR 见 §16
 - 参考：`DEPENDENCY-AUDIT.md`、`PARITY.md`、`RISKS.md`
 
-> **实现状态说明（2026-11-13）**：本文是目标架构。当前代码已完成数据/算法/备份/PDF 导出/导入（含 PDF 预览与 EPUB）、
-> 六语言（含动态模板）、手写（NCNN + 连写拆字）、提醒调度、内容包 UI、句子卡、标签主页、统计雷达与历史下钻、
-> 首页布局编辑、便携包；MSI 在受限环境仍为计划项。实际进度以 `README.md` 与 `ACCEPTANCE.md` 为准。
+> **实现状态说明（2026-11-15）**：本文是目标架构。当前代码已完成数据/算法/备份/PDF 导出/导入（含 PDF 预览与 EPUB）、
+> 六语言（含动态模板）、手写（NCNN + 连写拆字）、提醒调度、内容包 UI 与原生篇目预览、句子卡、标签主页、
+> 统计雷达与历史下钻、首页布局编辑、托盘菜单、开机自启、自定义字体导入、内容包拖拽、遮挡转练习、
+> 滚动日志、MSI 打包链路、便携包。MSI 产物在受限令牌环境下仍无法生成（`light.exe` 无权限创建带 ACL 的临时目录）；
+> 实际进度以 `README.md` 与 `ACCEPTANCE.md` 为准。
 
 ## 1. 目标与非目标
 
@@ -339,11 +341,11 @@ welcome（首启，NavHost 外）
 
 | 宽度 | 结构 |
 |---|---|
-| ≥ 1100 dp | NavigationRail + 列表/详情双栏；阅读器可全宽；练习单栏居中 |
-| 840–1100 dp | NavigationRail + 单栏，列表进入详情页 |
-| < 840 dp | 底部导航（首页/文章/数据/设置，素材库条件显示） |
+| ≥ 1100 dp | NavigationRail + 列表/详情双栏；阅读器可全宽；练习宽屏「左文右答」 |
+| 600–1100 dp | NavigationRail + 单栏，列表进入详情页 |
+| < 600 dp | 底部导航（首页/文章/数据/素材库） |
 
-- 默认窗口 1280×800，最小 960×640；多显示器记忆位置，DPI 变化时重新计算布局。
+- 默认窗口 1280×800，最小 900×600；多显示器记忆位置，DPI 变化时重新计算布局。
 - 弹层：设置/模式选择/标签选择用 Dialog 或右侧 Inspector；不使用手机底部 Sheet。
 - 首页：搜索框 + 今日计划卡 + 卡片画布（2 列，可拖拽/缩放/置顶/删除）；桌面增加「最近打开」和「快捷开始」。
 - 练习：单栏大输入区；顶部进度与模式；右侧可折叠提示/统计；`Enter` 提交、`Space` 翻面/下一张、`←/→` 切题。
@@ -382,13 +384,13 @@ welcome（首启，NavHost 外）
 
 ### 8.6 多语言
 
-- `Blancall-Std` 共 6 套资源，每套 **1,583 条 string + 73 条 plurals = 1,656 条**，合计 9,936 条。
-- 构建期 `tools/gen-i18n.ps1` 读取 6 套 `strings.xml`，生成 `desktop/src/main/resources/i18n/{zh-Hans,zh-Hant,en,ja,ko,ru}.json`：
-  - `strings`：key → 原文（保留 `%1$s` 等占位符）
-  - `plurals`：key → quantity → 原文
-- 运行时 `Strings` 对象：`format(key, args)` 用 `String.format(Locale.ROOT, ...)`；复数按语言规则选择（zh/ja/ko 只用 `other`；en 用 `one/other`；ru 用 `one/few/many/other`）。
-- 语言切换即时生效，持久化到 `ui_prefs.json`；默认跟随系统，系统语言不在 6 套内时用简中。
-- 守卫测试（移植 `LocaleParityGuardTest`）：6 套 key 集合相等、占位符一致、非中文语言无中文残留、繁简互斥、plurals 量档齐全。
+- `Blancall-Std` 共 6 套资源；桌面端以中文原文为 key（gettext 风格），当前五套非简中词表各 **964 条**，合计 4,820 条。
+- 构建期 `tools/gen-i18n.ps1`（规划）读取 6 套 `strings.xml`；当前仓库直接维护 `desktop/src/main/resources/i18n/{zh-TW,en,ja,ko,ru}.properties`：
+  - 每行 `中文原文=译文`，保留 `{0}` 等占位符
+  - 简体中文为源文，缺失时原样兜底
+- 运行时 `Strings` 对象：`t(source)` 查表；`f(template, args)` 用 `{0}` 占位符填参；catalog 缺失时按中文原文兜底。
+- 语言切换即时生效，持久化到 `ui_prefs.properties`；默认跟随系统，系统语言不在 6 套内时用简中。
+- 守卫测试：五套非简中 key 集合与英文一致（`StringsParityTest`）；UI 中文字面量必须进 catalog（`I18nCoverageTest`/`I18nUiGuardTest`）。
 - 硬编码中文棘轮：只扫描 `desktop/src/main/kotlin` 的字符串字面量；素材正文/隐私政策进白名单，其余必须进资源。
 - 日期/数字格式按语言，但统计口径仍用 `java.time` 的本地日期。
 
@@ -476,9 +478,10 @@ UI 书写板（Skia）
 ## 14. 打包与发布
 
 - `jpackage --type app-image` + `--type msi`（WiX 3.14）；`--win-per-user-install`、`--win-menu`、`--win-shortcut`、`--win-dir-chooser`。
+- 发布同时提供**自绘单文件 EXE 安装向导**（不经过系统 Temp，规避受限环境对 Inno/jpackage 的临时目录限制）；MSI 作为可选产物，由 `tools/package-windows.ps1` 在 WiX 可用时生成。
 - 安装目录 `%LOCALAPPDATA%\Programs\Blancall`；用户数据固定在 `%LOCALAPPDATA%\Blancall`，卸载不删除。
 - 便携版 ZIP：app-image + `Blancall.exe`；数据仍写 `%LOCALAPPDATA%`（避免 U 盘只读/权限问题），设置里可改数据目录（Phase 6）。
-- 版本：`7.6.1-win.1`；产品名 `Blancall`（无 AI 后缀）；`CHANGELOG.md` 每个里程碑一条。
+- 版本：`7.6.1-win.3`；产品名 `Blancall`（无 AI 后缀）；`CHANGELOG.md` 每个里程碑一条。
 - 签名：无证书时提供 SHA256 与「未知发布者」说明；SmartScreen 风险写入 RISKS。
 - 自动备份：每日首次启动/退出时若距上次 >24h，写 `backups/auto_yyyyMMdd.zip`（保留最近 7 份）。
 

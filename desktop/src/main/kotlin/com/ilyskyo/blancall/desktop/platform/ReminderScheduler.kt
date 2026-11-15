@@ -135,7 +135,7 @@ class ReminderScheduler(private val state: AppState) {
             store.markSent(item.reason, now)
             sent++
         }
-        if (sent > 0) Log.d(TAG, "已发送 $sent 条提醒")
+        if (sent > 0) Log.d(TAG, "sent $sent reminders")
     }
 
     /** 采集判定输入并交给纯函数拍板；与 Android ReminderWorker.buildPlans 同口径。 */

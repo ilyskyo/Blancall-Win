@@ -172,70 +172,85 @@ val AccentPresets = listOf(
     ),
 )
 
-// ── 界面字体：标题用霞鹜文楷，正文用系统无衬线 ──
+// ── 界面字体：与 Android 一致，默认系统衬线；霞鹜文楷只是可选项 ──
 
 private val XwwkFamily = FontFamily(Font("fonts/xwwk_regular.ttf", FontWeight.Normal))
 
-val BlancallTypography = Typography(
+const val UI_FONT_SERIF = "serif"
+const val UI_FONT_SANS = "sans"
+const val UI_FONT_XWWK = "xwwk"
+
+/** 阅读页字体族：与 ReaderPrefs.fontId / 设置里的字族 id 同一套取值。 */
+fun uiFontFamily(id: String): FontFamily = when (id) {
+    UI_FONT_XWWK -> XwwkFamily
+    UI_FONT_SANS -> FontFamily.SansSerif
+    else -> FontFamily.Serif
+}
+
+/**
+ * 基础字阶：标题/正文族用系统衬线（Android 的 FontFamily.Serif），标签走系统默认。
+ * 霞鹜文楷**不是默认值**——只有用户在设置里选择后才替换标题/正文族。
+ */
+private val BaseTypography = Typography(
     displayLarge = TextStyle(
-        fontFamily = XwwkFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.SemiBold,
         fontSize = 32.sp,
         lineHeight = 42.sp,
     ),
     displayMedium = TextStyle(
-        fontFamily = XwwkFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.SemiBold,
         fontSize = 30.sp,
         lineHeight = 40.sp,
     ),
     displaySmall = TextStyle(
-        fontFamily = XwwkFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.SemiBold,
         fontSize = 28.sp,
         lineHeight = 38.sp,
     ),
     headlineLarge = TextStyle(
-        fontFamily = XwwkFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.SemiBold,
         fontSize = 26.sp,
         lineHeight = 34.sp,
     ),
     headlineMedium = TextStyle(
-        fontFamily = XwwkFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.SemiBold,
         fontSize = 22.sp,
         lineHeight = 30.sp,
     ),
     headlineSmall = TextStyle(
-        fontFamily = XwwkFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.SemiBold,
         fontSize = 20.sp,
         lineHeight = 28.sp,
     ),
     titleLarge = TextStyle(
-        fontFamily = XwwkFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.SemiBold,
         fontSize = 18.sp,
         lineHeight = 26.sp,
         letterSpacing = 0.5.sp,
     ),
     titleMedium = TextStyle(
-        fontFamily = XwwkFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.Medium,
         fontSize = 15.sp,
         lineHeight = 22.sp,
         letterSpacing = 0.3.sp,
     ),
     titleSmall = TextStyle(
-        fontFamily = XwwkFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.Medium,
         fontSize = 13.sp,
         lineHeight = 18.sp,
         letterSpacing = 0.2.sp,
     ),
     bodyLarge = TextStyle(
-        fontFamily = XwwkFamily,
+        fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.Normal,
         fontSize = 16.sp,
         lineHeight = 28.sp,
@@ -277,6 +292,31 @@ val BlancallTypography = Typography(
         letterSpacing = 0.3.sp,
     ),
 )
+
+/**
+ * 按用户选择重建界面字阶：只替换标题/正文族，
+ * label* 与 bodyMedium/Small 保持系统无衬线（与 Android 的 uiTypography 同口径）。
+ */
+fun uiTypography(font: String): Typography {
+    val target = when (font) {
+        UI_FONT_XWWK -> XwwkFamily
+        UI_FONT_SANS -> FontFamily.Default
+        else -> return BaseTypography
+    }
+    val base = BaseTypography
+    return base.copy(
+        displayLarge = base.displayLarge.copy(fontFamily = target),
+        displayMedium = base.displayMedium.copy(fontFamily = target),
+        displaySmall = base.displaySmall.copy(fontFamily = target),
+        headlineLarge = base.headlineLarge.copy(fontFamily = target),
+        headlineMedium = base.headlineMedium.copy(fontFamily = target),
+        headlineSmall = base.headlineSmall.copy(fontFamily = target),
+        titleLarge = base.titleLarge.copy(fontFamily = target),
+        titleMedium = base.titleMedium.copy(fontFamily = target),
+        titleSmall = base.titleSmall.copy(fontFamily = target),
+        bodyLarge = base.bodyLarge.copy(fontFamily = target),
+    )
+}
 
 // ── 超椭圆圆角（与 Android SmoothShape.kt 相同，n=3）──
 

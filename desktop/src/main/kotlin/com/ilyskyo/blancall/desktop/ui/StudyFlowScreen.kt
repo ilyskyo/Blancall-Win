@@ -24,6 +24,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,31 +59,25 @@ fun StudyFlowScreen(state: AppState) {
     val plan = remember(snapshot) { snapshot?.let { StudyCoach.buildPlan(it.input) } }
     val input = snapshot?.input
 
+    val flowListState = androidx.compose.foundation.lazy.rememberLazyListState()
     LazyColumn(
-        Modifier.fillMaxSize(),
+        Modifier.fillMaxSize().touchScrollable(flowListState, rememberCoroutineScope()),
+        state = flowListState,
         contentPadding = androidx.compose.foundation.layout.PaddingValues(32.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         item {
-            Row(
-                Modifier.fillMaxWidth().widthIn(max = 1000.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                IconButton(onClick = { state.back() }) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "返回")
-                }
-                Column(Modifier.weight(1f)) {
-                    Text("学习任务流", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                    Text(
-                        "按到期、未完成、薄弱与目标排序；一次最多 3 步",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                TextButton(onClick = { tick++ }) { Text("重新计算") }
-            }
+            BlancallTopBar(
+                title = "学习任务流",
+                subtitle = "按到期、未完成、薄弱与目标排序；一次最多 3 步",
+                onBack = { state.back() },
+                actions = {
+                    GlassButton(onClick = { tick++ }) {
+                        Text("重新计算", style = MaterialTheme.typography.labelMedium)
+                    }
+                },
+            )
         }
 
         item {

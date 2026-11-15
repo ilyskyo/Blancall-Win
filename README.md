@@ -12,9 +12,9 @@
 
 - 参考实现：`Blancall-Std 7.6.1-NoAI / versionCode 54`
 - 本工程：Kotlin/JVM + Compose Multiplatform Desktop
-- 版本：`7.6.1-win.2`
+- 版本：`7.6.1-win.3`
 - AI：**不包含**（与 NoAI 一致：无 AI 代码路径、无 AI 设置、无 AI 入口）
-- 发布形态：便携 ZIP（标准版 / 精简版）+ 用户级安装脚本；**中文手写模型由 Release 单独提供**；**MSI 尚未产出**（见「已知限制」）
+- 发布形态：**EXE 安装包（推荐）** + 免安装 ZIP；**中文手写模型由 Release 单独提供**
 
 > 与 Android 版逐项功能的对照表、实现状态与差异清单在 [docs/win/PARITY.md](docs/win/PARITY.md)；验收证据在 [docs/win/ACCEPTANCE.md](docs/win/ACCEPTANCE.md)。本 README 的「已知限制」是发布口径，二者不一致时以 PARITY/ACCEPTANCE 中的证据为准。
 
@@ -36,46 +36,45 @@
 
 - Windows 10 / Windows 11，**x64**；无需管理员权限。
 - 未验证：Windows 7 / 8.1、ARM64、Windows Server、远程桌面 / 多用户会话。
-- 磁盘：标准版解压约 430 MB（含 ncnn 与拉丁模型）；安装中文手写模型后约 450 MB。
+- 磁盘：标准版安装后约 430 MB（含 ncnn 与拉丁模型）；安装中文手写模型后约 450 MB。
 
 ## 安装
 
 ### EXE 安装包（推荐）
 
-下载 `Blancall-7.6.1-win-x64-setup.exe`（约 117 MB），双击按向导安装：
+下载 `Blancall-7.6.1-win-x64-setup.exe`（约 125 MB），双击按向导安装：
 
 - 当前用户安装，无需管理员权限；默认目录 `%LOCALAPPDATA%\Programs\Blancall`
 - 可选桌面快捷方式，创建开始菜单项，并在「设置 → 应用 → 已安装的应用」注册卸载入口
+- 快捷方式直接启动 `Blancall.exe`（原生启动器，不经过脚本宿主，也不会闪控制台）
+- 安装向导为自绘单文件：欢迎（MIT 信息页）→ 安装目录与桌面/开始菜单快捷方式 → 进度 → 完成；不经过系统 Temp，也不会在安装时生成卸载器
+- 向导支持**六种界面语言**（简中 / 繁中 / 英 / 日 / 韩 / 俄）：首次启动跟随系统语言，可在欢迎页随时切换
+- 向导按显示器 DPI 缩放（PerMonitorV2）：在 200% 缩放下按 643×496 逻辑尺寸显示，文字与控件不会糊、不会被裁切
+- 安装前检查 Blancall 是否仍在运行（包括缩在托盘）；若 `app\blancall-win.jar` 被占用，会明确提示先完全退出程序，而不是只报「访问被拒绝」
+- 卸载由预置的 `BlancallUninstall.exe` 完成，卸载入口注册在「设置 → 应用 → 已安装的应用」；学习数据不受影响
+- 安装向导以**信息页**展示 MIT 许可证，不要求点「同意 / 拒绝」；`LICENSE` 同时随程序安装到应用目录
 - 卸载只删除程序目录与快捷方式，**不会删除** `%LOCALAPPDATA%\Blancall` 学习数据
 - 未做代码签名，SmartScreen 可能提示「未知发布者」（见「关于代码签名」）
 - 与便携包一样**不含中文手写模型**，需要时按下一节单独安装
 
-### 便携版
+### 免安装版
 
-从 [Releases](https://github.com/ilyskyo/Blancall-Win/releases)（或本地 `dist/`）解压 ZIP 后双击 `Blancall.vbs`：
+下载 `Blancall-7.6.1-win-x64-portable.zip`，解压到任意可写目录，双击 `Blancall.exe` 运行：
 
-```text
-dist\Blancall-7.6.1-win-x64-portable.zip        约 123 MB（含 ncnn 与拉丁模型，不含中文手写模型）
-dist\Blancall-7.6.1-win-x64-portable-lite.zip   约 116 MB（不含 models/，手写入口全部隐藏）
-```
+- 不写系统目录、不注册卸载项；学习数据仍在 `%LOCALAPPDATA%\Blancall`，升级时替换程序文件夹即可
+- 如文件来自下载，首次运行若出现「打开文件 - 安全警告」，点「运行」即可（ZIP 未签名）
+
+> 两个包只差「是否注册快捷方式与卸载入口」，程序、数据格式完全相同。
 
 ### 中文手写模型（单独下载）
 
-受 CASIA-HWDB 授权限制，中文手写模型**不随仓库与便携包分发**。需要中文手写时：
+受 CASIA-HWDB 授权限制，中文手写模型**不随发布包分发**。需要中文手写时：
 
 1. 从 [Releases](https://github.com/ilyskyo/Blancall-Win/releases) 下载 `Blancall-7.6.1-handwriting-pack-win-x64.zip`（约 27 MB，含 `ncnn.dll`、中文模型与拉丁模型）。
-2. 解压到应用根目录（与 `Blancall.vbs` 同级），得到 `models\ncnn.dll`、`models\hccr\`、`models\hccr_en\`。
+2. 解压到应用根目录（与 `Blancall.exe` 同级；安装版为 `%LOCALAPPDATA%\Programs\Blancall\`），得到 `models\ncnn.dll`、`models\hccr\`、`models\hccr_en\`。
 3. 重启应用，练习页出现「手写」入口；设置 → 关于会显示模型许可声明。
 
-用户级安装的根目录为 `%LOCALAPPDATA%\Programs\Blancall\`。未安装中文模型时，中文手写入口自动隐藏，键盘与拉丁手写不受影响。
-
-### 手动安装到当前用户（无需管理员）
-
-```powershell
-powershell -ExecutionPolicy Bypass -File tools\install-portable.ps1 -FromZip dist\Blancall-7.6.1-win-x64-portable.zip
-```
-
-安装到 `%LOCALAPPDATA%\Programs\Blancall`，创建桌面 / 开始菜单快捷方式。**卸载**：删除该目录与两个快捷方式即可，**不会删除** `%LOCALAPPDATA%\Blancall` 学习数据。
+未安装中文模型时，中文手写入口自动隐藏，键盘与拉丁手写不受影响。
 
 ### 自行编译
 
@@ -99,21 +98,18 @@ powershell -ExecutionPolicy Bypass -File tools\package-windows.ps1
 powershell -ExecutionPolicy Bypass -File tools\package-windows.ps1 -ModelDir D:\path\to\handwriting-pack
 ```
 
-脚本依次执行测试 → `uberJar` → `jlink` → 组装 app image → 生成标准 / 精简 ZIP → 用 Inno Setup 6 编译 EXE 安装包，并在末尾尝试 `jpackage` MSI（当前环境无法完成，见「已知限制」）。不传 `-ModelDir` 时，产物不含中文手写模型。
+脚本依次执行测试 → `uberJar` → `jlink` → 组装 app image → 用系统 `csc` 编译 `Blancall.exe` 与 `BlancallUninstall.exe` → 打包 payload → 编译自绘安装向导 → 尝试 `jpackage + WiX 3.14` 生成 MSI → 生成免安装 ZIP。不传 `-ModelDir` 时，产物不含中文手写模型。前置只需要 JDK 21；MSI 需要 WiX 3.14，缺失或受限环境下会自动跳过（可加 `-SkipMsi` 显式关闭）。
 
 产物：
 
 ```text
-dist\Blancall-7.6.1-win-x64-setup.exe           EXE 安装包（约 117 MB）
-dist\Blancall-7.6.1-win-x64-portable.zip        便携标准版（约 123 MB）
-dist\Blancall-7.6.1-win-x64-portable-lite.zip   便携精简版（约 116 MB）
+dist\Blancall-7.6.1-win-x64-setup.exe      EXE 安装包（主发布产物）
+dist\Blancall-7.6.1-win-x64-portable.zip   免安装包
 ```
-
-EXE 安装包由 [Inno Setup 6](https://jrsoftware.org/isinfo.php) 编译（`tools/windows-installer.iss`）；未安装 Inno Setup 时脚本会跳过该步并保留两个 ZIP。
 
 ### 关于代码签名
 
-发布包**未使用代码签名证书**，首次运行可能触发 SmartScreen「Windows 已保护你的电脑」。可选择「更多信息 → 仍要运行」，或自行从源码构建并比对产物。本项目不提供自动更新。
+发布包**未使用代码签名证书**，从网络下载后首次运行可能出现 SmartScreen /「打开文件 - 安全警告」。选择「仍要运行」即可；本项目不提供自动更新。Windows 的「发行者」字段来自 Authenticode 证书，没有签名证书时无法填成 ilyskyo（安装包元数据里的 `AppPublisher=ilyskyo` 不改变 SmartScreen 的显示）。
 
 ## 功能
 
@@ -123,9 +119,11 @@ EXE 安装包由 [Inno Setup 6](https://jrsoftware.org/isinfo.php) 编译（`too
 - **句子卡**：今日句 + 到期句 + 新句队列、首字挖空回忆面、显示答案、忘记 / 不熟 / 记住了三键评级、间隔预览、全量复习、完成页
 - **记忆与统计**：今日计划 / 任务流、每日一句、学习日历、记忆热力图、遗忘曲线、六维错因雷达、错题本、成就、需加强文章、练习记录下钻（单篇 / 跨文来源）、CSV、PNG 分享图
 - **首页与标签**：首页布局可上移 / 下移 / 显示隐藏 / 恢复默认；标签主页汇总文章、到期 / 暂停统计与练习入口
-- **数据**：与 Android 同格式读写；备份 ZIP v1 导出 / 导入；导入前预备份；每日自动备份（保留最近 7 份）；内容包导入与管理
-- **系统**：单实例、窗口几何记忆、关闭询问（托盘 / 退出 / 记住）、托盘与提醒调度（免打扰 / 每日目标 / 测试提醒）、原生菜单栏、最近打开、快捷键（`Ctrl+N/O/F/,`、`Ctrl+Z/Y`、`Esc`、`F11`）、崩溃日志、诊断包
-- **语言**：简体中文 / 繁體中文 / English / 日本語 / 한국어 / Русский，设置内即时切换；静态文案与常见动态模板均入 catalog，未收录时按中文兜底
+- **数据**：与 Android 同格式读写；备份 ZIP v1 导出 / 导入；导入前预备份；每日自动备份（保留最近 7 份）；内容包导入、篇目预览与「导入并阅读」
+- **系统**：单实例、原生菜单栏（文件 / 视图 / 帮助）、窗口几何记忆、关闭询问（托盘 / 退出 / 记住）、托盘菜单（打开 / 今日复习 / 设置 / 退出）与提醒调度（免打扰 / 每日目标 / 测试提醒）、开机自启、练习任务栏进度、最近打开、快捷键（`Ctrl+N/O/F/,`、`Ctrl+Z/Y`、`Esc`、`F11`）、崩溃日志与滚动运行日志、诊断包
+- **阅读联动**：选区存为自定义挖空；当前遮挡（本地算法或自定义配置）可一键转成挖空练习
+- **界面**：非沉浸页常驻左侧导航，设置页 ≥900dp 左分类 + 右内容；窗口最小 900×600；默认系统黑体（微软雅黑 / Segoe 回落），可切系统衬线 / 霞鹜文楷 / 导入 TTF/OTF；主要页面有桌面滚动条、悬停与手型光标；浅色纯白 / 米黄与深色主题
+- **语言**：简体中文 / 繁體中文 / English / 日本語 / 한국어 / Русский，设置内即时切换；五套词表各 964 条，源码守卫保证 UI 中文字面量全部有英文词条
 
 ## 数据与备份
 
@@ -169,19 +167,15 @@ EXE 安装包由 [Inno Setup 6](https://jrsoftware.org/isinfo.php) 编译（`too
 
 > 口径：**未实现** = 仓库中没有该功能；**部分 / 未验收** = 代码存在，但缺少人工或真实数据验收；**平台差异** = 桌面与 Android 机制不同，属预期行为。逐项证据见 [docs/win/PARITY.md](docs/win/PARITY.md) 与 [docs/win/ACCEPTANCE.md](docs/win/ACCEPTANCE.md)。
 
-### A. 尚未实现
+### A. 尚未实现 / 环境受限
 
 | 项目 | 说明 |
 |---|---|
-| MSI 安装包 | EXE 安装包已提供；MSI 需 `jpackage` + WiX 3.14，当前构建环境为受限令牌，`light.exe` 创建临时目录被拒绝访问；需在普通用户桌面会话重跑脚本 |
+| MSI 安装包 | 打包脚本已接入 `jpackage + WiX 3.14`；当前受限令牌环境下 `light.exe` 无权限创建带 ACL 的临时目录，产物未生成；普通用户会话重跑 `tools\package-windows.ps1` 即可，EXE 安装包始终可用 |
 | 代码签名 | 无证书，SmartScreen 会提示未知发布者 |
 | 自动更新 | 无网络能力，升级需手动下载替换 |
-| 开机自启 | 未实现注册表 / 启动项写入 |
-| 素材库（WebView） | 未实现；内容包导入可用，但没有 Android 的素材库浏览页 |
-| 任务栏进度 / 托盘迷你窗 | 未实现 |
-| 阅读自定义字体导入 | 未实现；仅内置 PDF 导出的字体与系统字体 |
-| 内容包拖拽导入、数据互换 | 未实现（内容包 UI 与 ZIP 导入已完成） |
-| 遮挡转练习、完整自定义挖空编辑器 | 未实现（练习中自定义挖空、选区存为挖空已完成） |
+| 素材库（WebView） | 不引入 WebView2；桌面以原生「内容包」浏览替代（篇目预览 / 导入 / 导入并阅读），不做 HTML 素材页 |
+| 托盘迷你窗 | 托盘菜单已提供「今日复习 / 设置」，未做置顶迷你窗 |
 | 手写压感、标点手势 | 桌面鼠标 / 普通笔事件无压感，仅按 `InkWidthSim` 模拟；标点手势未做 |
 | 手写真实笔迹对照 | 未与 Android 做同笔迹 top-1 / top-5 一致率对照 |
 
@@ -190,16 +184,20 @@ EXE 安装包由 [Inno Setup 6](https://jrsoftware.org/isinfo.php) 编译（`too
 | 项目 | 当前证据 | 缺口 |
 |---|---|---|
 | 全链路 UI 点验 | 导入 / 练习 / 结果 / 统计 / 备份均有自动化测试 | 未逐页人工点验；流程性缺陷可能未被自动化覆盖 |
-| DPI 125% / 150% / 200% | `-Dsun.java2d.uiScale` 启动冒烟通过 | 未做像素级布局矩阵验收 |
+| DPI 125% / 150% / 200% | 200% 真实启动截图核对；离屏渲染覆盖 100% / 150% 与宽窄窗；安装向导在 200% 下按 643×496 逻辑尺寸布局并截图核对 | 125% 未逐档截图 |
 | 多显示器 / 热插拔 | 窗口几何有记忆 | 跨屏拖动、缩放变化未验证 |
 | 托盘气泡、睡眠唤醒补发 | 调度器、去重、免打扰、每日目标已接 | 真实桌面会话下的气泡与跨睡眠补发未验证 |
-| 六语言 | 5 套 catalog 与中文 key 一致，动态模板测试通过 | 未逐语言人工走查；少量运行时拼接仍可能回落中文 |
+| 六语言 | 5 套 catalog 各 703 条且 key 一致；源码守卫覆盖 UI 中文字面量；安装向导六语跟随系统并可手动切换 | 未逐语言人工走查；catalog 之外新增文案会被守卫拦截 |
 | 真实 Android 备份回归 | 备份格式、安全边界、往返读写有单测 | **未用真实脱敏备份做端到端导入 → 导出 → 再导入** |
 | 手写识别精度 | 合成笔画 top-1：永 97.6%、你 99.3%、好 98.3%、学 99.8%；拉丁 A / 7 ≈ 99.9%；连写「你好」拆分正确 | 仅合成样本；真实笔迹、连笔风格、跨设备一致率未知 |
 | 提醒设置 UI | 偏好落盘有单测 | 未逐项点击验证 |
 | 结果页提示统计、大屏统计布局 | 逻辑由 shared 测试覆盖 | 未人工验收 |
 | 导入前预备份 | 每次导入都会尝试写入 `backups\pre-import_*.zip` | 该预备份为 best-effort：写入失败（如磁盘满）时不会阻断导入，且不会提示；重要导入前请手动「导出备份」 |
-| EXE 安装包的快捷方式 / 卸载入口 | 文件安装、启动、卸载已在验证变体中通过（无快捷方式/注册表步骤） | 当前构建环境限制未签名程序写开始菜单与 HKCU，实际安装包的快捷方式与「应用和功能」注册项需在普通用户会话点验 |
+| 安装向导的快捷方式 / 卸载入口 | 自绘安装器静默安装、预置卸载器删除程序目录均在本机通过；开始菜单快捷方式在受限变体通过 | 桌面快捷方式与 HKCU 卸载注册项在当前构建沙箱返回 `0x80070005`，普通用户会话可用；需点验这两项 |
+| 程序运行中安装 | 通过：jar 被占用时返回本地化的「请完全退出 Blancall（含托盘）」提示；程序退出后可正常覆盖安装 | — |
+| 托盘菜单 / 开机自启 / 任务栏进度 | 托盘菜单「今日复习 / 设置」、HKCU Run 写入、练习页任务栏不确定进度均已接入；自启命令按安装路径生成 | 托盘菜单点击与开机自启需真实桌面会话点验；受限环境无法写 HKCU |
+| 内容包拖拽 / 篇目预览 / 遮挡转练习 | ZIP 拖入按「备份包 → 提示；内容包 → 导入」分流；篇目预览与导入并阅读；遮挡转练习有单测 | UI 点验未做；真实内容包样本待补 |
+| 滚动日志 | `logs/blancall.log` 10 MB × 5，`shared` 日志经 sink 汇入 | 未做长时间运行轮转实测 |
 
 ### C. 与 Android 的平台差异（预期行为）
 

@@ -186,8 +186,8 @@ class ReadingMarkStore private constructor(private val file: File) {
         } catch (_: Exception) { /* 保留失败不影响主流程 */ }
     }
 
-    /** 必须在 [lock] 内调用：整表回写，[map] 即最新镜像 */
-    private fun writeLocked(map: Map<Long, List<ReadingMark>>) {
+    /** 必须在 [lock] 内调用：整表回写，[map] 即最新镜像。@return false = 内存镜像已回滚 */
+    private fun writeLocked(map: Map<Long, List<ReadingMark>>): Boolean {
         if (loadFailed) {
             // 日志用英文：本仓库的硬编码中文棘轮只放行 UI 文案进 strings.xml，
             // 日志不该占用户看得到的多语言预算
@@ -195,7 +195,7 @@ class ReadingMarkStore private constructor(private val file: File) {
                 "ReadingMarkStore",
                 "load failed; refusing to write so other articles' notes are not wiped: ${file.absolutePath}"
             )
-            return
+            return false
         }
         try {
             val articles = JSONObject()
@@ -227,8 +227,10 @@ class ReadingMarkStore private constructor(private val file: File) {
                     })
                 }.toString()
             )
+            return true
         } catch (e: Exception) {
             Log.e("ReadingMarkStore", "failed to persist marks: ${file.absolutePath}", e)
+            return false
         }
     }
 
@@ -263,7 +265,7 @@ class ReadingMarkStore private constructor(private val file: File) {
         val stored = hashes[articleId]
         if (stored.isNullOrBlank()) {
             hashes[articleId] = currentHash
-            writeLocked(map)
+            if (!writeLocked(map)) hashes.remove(articleId)
             false
         } else {
             stored != currentHash
@@ -288,17 +290,25 @@ class ReadingMarkStore private constructor(private val file: File) {
     ): ReadingMark? = synchronized(lock) {
         if (articleId <= 0L || paragraph < 0 || start < 0 || end <= start) return null
         val map = loadLocked()
-        val list = map[articleId].orEmpty().toMutableList()
+        val original = map[articleId]
+        val list = original.orEmpty().toMutableList()
         val now = System.currentTimeMillis()
+        fun commit(): Boolean {
+            map[articleId] = sorted(list)
+            if (!writeLocked(map)) {
+                if (original == null) map.remove(articleId) else map[articleId] = original
+                return false
+            }
+            bump()
+            return true
+        }
 
         val exact = list.firstOrNull { it.p == paragraph && it.a == start && it.e == end }
         if (exact != null) {
             if (note.isBlank()) return exact
             val upgraded = exact.copy(note = note, updatedAt = now)
             list[list.indexOf(exact)] = upgraded
-            map[articleId] = list
-            writeLocked(map)
-            bump()
+            if (!commit()) return exact
             return upgraded
         }
 
@@ -341,9 +351,7 @@ class ReadingMarkStore private constructor(private val file: File) {
             if (note.isNotBlank() && covering != null) {
                 val updated = covering.copy(note = note, updatedAt = now)
                 list[list.indexOf(covering)] = updated
-                map[articleId] = sorted(list)
-                writeLocked(map)
-                bump()
+                if (!commit()) return covering
                 return updated
             }
             return covering
@@ -368,22 +376,24 @@ class ReadingMarkStore private constructor(private val file: File) {
             list.add(mark)
             if (index == 0) result = mark
         }
-        map[articleId] = sorted(list)
-        writeLocked(map)
-        bump()
+        if (!commit()) return null
         result
     }
 
     /** 改写某条记录的备注（空串 = 退化成纯划线；记录不存在返回 null） */
     fun updateNote(articleId: Long, markId: Long, note: String): ReadingMark? = synchronized(lock) {
         val map = loadLocked()
-        val list = map[articleId].orEmpty().toMutableList()
+        val original = map[articleId]
+        val list = original.orEmpty().toMutableList()
         val idx = list.indexOfFirst { it.id == markId }
         if (idx < 0) return null
         val updated = list[idx].copy(note = note, updatedAt = System.currentTimeMillis())
         list[idx] = updated
-        map[articleId] = list
-        writeLocked(map)
+        map[articleId] = sorted(list)
+        if (!writeLocked(map)) {
+            if (original == null) map.remove(articleId) else map[articleId] = original
+            return null
+        }
         bump()
         updated
     }
@@ -391,10 +401,14 @@ class ReadingMarkStore private constructor(private val file: File) {
     /** 删除一条记录（不存在返回 false，不触发落盘） */
     fun removeMark(articleId: Long, markId: Long): Boolean = synchronized(lock) {
         val map = loadLocked()
-        val list = map[articleId].orEmpty().toMutableList()
+        val original = map[articleId]
+        val list = original.orEmpty().toMutableList()
         if (!list.removeAll { it.id == markId }) return false
         if (list.isEmpty()) map.remove(articleId) else map[articleId] = list
-        writeLocked(map)
+        if (!writeLocked(map)) {
+            if (original == null) map.remove(articleId) else map[articleId] = original
+            return false
+        }
         bump()
         true
     }
@@ -403,12 +417,18 @@ class ReadingMarkStore private constructor(private val file: File) {
     fun removeArticle(articleId: Long) {
         synchronized(lock) {
             val map = loadLocked()
+            val oldMarks = map[articleId]
+            val oldHash = hashes[articleId]
             val removedMarks = map.remove(articleId) != null
             // 指纹也必须一起删：只删 marks 时，hashes 里仍留着旧正文的 md5，
             // id 复用后新文章第一次进阅读模式会拿旧指纹比对并误报「正文已变」。
             val removedHash = hashes.remove(articleId) != null
             if (!removedMarks && !removedHash) return
-            writeLocked(map)
+            if (!writeLocked(map)) {
+                oldMarks?.let { map[articleId] = it }
+                oldHash?.let { hashes[articleId] = it }
+                return
+            }
             bump()
         }
     }
@@ -427,7 +447,8 @@ class ReadingMarkStore private constructor(private val file: File) {
         if (end <= start) return 0
         return synchronized(lock) {
             val map = loadLocked()
-            val list = map[articleId].orEmpty().toMutableList()
+            val original = map[articleId]
+            val list = original.orEmpty().toMutableList()
             if (list.isEmpty()) return@synchronized 0
             var changed = 0
             val result = mutableListOf<ReadingMark>()
@@ -454,7 +475,10 @@ class ReadingMarkStore private constructor(private val file: File) {
             }
             if (changed == 0) return@synchronized 0
             if (result.isEmpty()) map.remove(articleId) else map[articleId] = sorted(result)
-            writeLocked(map)
+            if (!writeLocked(map)) {
+                if (original == null) map.remove(articleId) else map[articleId] = original
+                return@synchronized 0
+            }
             bump()
             changed
         }

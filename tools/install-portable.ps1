@@ -21,8 +21,8 @@ if ($FromZip) {
 } else {
     $src = Join-Path $root ".tools\app-image\Blancall"
 }
-if (-not (Test-Path (Join-Path $src "Blancall.vbs"))) {
-    throw "找不到应用目录（需要 Blancall.vbs）：$src"
+if (-not (Test-Path (Join-Path $src "Blancall.exe"))) {
+    throw "找不到应用目录（需要 Blancall.exe）：$src"
 }
 
 if (Test-Path $dest) {
@@ -33,7 +33,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
 Copy-Item $src $dest -Recurse -Force
 
 $ws = New-Object -ComObject WScript.Shell
-$target = Join-Path $dest "Blancall.vbs"
+$target = Join-Path $dest "Blancall.exe"
 foreach ($lnkPath in @(
         (Join-Path $env:USERPROFILE "Desktop\Blancall.lnk"),
         (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Blancall.lnk")
@@ -43,8 +43,6 @@ foreach ($lnkPath in @(
     $lnk.TargetPath = $target
     $lnk.WorkingDirectory = $dest
     $lnk.Description = "Blancall - local-first cloze memorization"
-    $ico = Join-Path $dest "Blancall.ico"
-    if (Test-Path $ico) { $lnk.IconLocation = $ico }
     $lnk.Save()
 }
 

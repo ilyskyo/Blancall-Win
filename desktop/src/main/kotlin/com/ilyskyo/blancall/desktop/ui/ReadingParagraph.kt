@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.ilyskyo.blancall.data.repository.ReadingMark
+import com.ilyskyo.blancall.desktop.app.Strings
 
 /**
  * 阅读段落：支持鼠标拖选划线/批注，并把已有标注画在正文上。
@@ -40,6 +41,8 @@ fun ReadingParagraph(
     fontPx: Float,
     lineHeight: Float,
     indent: Boolean,
+    fontFamily: androidx.compose.ui.text.font.FontFamily? = null,
+    fontWeight: androidx.compose.ui.text.font.FontWeight = androidx.compose.ui.text.font.FontWeight.Normal,
     marks: List<ReadingMark>,
     onAddMark: (start: Int, end: Int, note: String) -> Unit,
     onDeleteMark: (markId: Long) -> Unit,
@@ -60,8 +63,10 @@ fun ReadingParagraph(
         text = text,
         fontSize = fontPx.sp,
         lineHeight = (fontPx * lineHeight).sp,
+        fontFamily = fontFamily,
+        fontWeight = fontWeight,
         style = MaterialTheme.typography.bodyLarge.copy(
-            textIndent = if (indent) TextIndent(firstLine = 2.em) else TextIndent(),
+            textIndent = if (indent) TextIndent(firstLine = (fontPx * 2f).sp) else TextIndent(),
         ),
         modifier = Modifier
             .fillMaxWidth()
@@ -142,7 +147,7 @@ fun ReadingParagraph(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                "批注：${mark.note}",
+                Strings.f("批注：{0}", mark.note),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),

@@ -1,5 +1,6 @@
 package com.ilyskyo.blancall.desktop.platform
 
+import com.ilyskyo.blancall.desktop.app.Strings
 import org.apache.pdfbox.Loader
 import org.apache.pdfbox.text.PDFTextStripper
 import org.apache.poi.hwpf.HWPFDocument
@@ -86,14 +87,14 @@ object TextImporter {
         ZipFile(file).use { zip ->
             val factory = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
             val containerBytes = zip.entryBytes("META-INF/container.xml")
-                ?: throw IllegalArgumentException("不是有效的 EPUB：缺少 META-INF/container.xml")
+                ?: throw IllegalArgumentException(Strings.t("不是有效的 EPUB：缺少 META-INF/container.xml"))
             val container = factory.newDocumentBuilder().parse(ByteArrayInputStream(containerBytes))
             val rootfile = container.getElementsByTagNameNS("*", "rootfile").item(0)
-                ?: throw IllegalArgumentException("不是有效的 EPUB：缺少 rootfile")
+                ?: throw IllegalArgumentException(Strings.t("不是有效的 EPUB：缺少 rootfile"))
             val opfPath = rootfile.attributes.getNamedItem("full-path")?.nodeValue
-                ?: throw IllegalArgumentException("不是有效的 EPUB：rootfile 缺少 full-path")
+                ?: throw IllegalArgumentException(Strings.t("不是有效的 EPUB：rootfile 缺少 full-path"))
             val opfBytes = zip.entryBytes(opfPath)
-                ?: throw IllegalArgumentException("不是有效的 EPUB：找不到 $opfPath")
+                ?: throw IllegalArgumentException(Strings.f("不是有效的 EPUB：找不到 {0}", opfPath))
             val opf = factory.newDocumentBuilder().parse(ByteArrayInputStream(opfBytes))
 
             val manifest = HashMap<String, String>()
@@ -118,7 +119,7 @@ object TextImporter {
                     out.append(text)
                 }
             }
-            if (out.isBlank()) throw IllegalArgumentException("EPUB 里没有可导入的文字")
+            if (out.isBlank()) throw IllegalArgumentException(Strings.t("EPUB 里没有可导入的文字"))
             return out.toString()
         }
     }

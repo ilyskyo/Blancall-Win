@@ -18,12 +18,16 @@ object AppPaths {
     val backupsDir: File get() = File(root, "backups")
     val logsDir: File get() = File(root, "logs")
     val modelsDir: File get() = File(root, "models")
+    val fontsDir: File get() = File(root, "fonts")
     val cacheDir: File get() = File(root, "cache")
     val settingsDir: File get() = File(root, "settings")
 
-    fun ensureDirectories() {
-        listOf(dataDir, backupsDir, logsDir, modelsDir, cacheDir, settingsDir).forEach {
-            if (!it.exists()) it.mkdirs()
+    /** @return 全部目录是否可用；失败时由调用方显示常驻错误，不能静默继续。 */
+    fun ensureDirectories(): Boolean {
+        var ok = true
+        listOf(dataDir, backupsDir, logsDir, modelsDir, fontsDir, cacheDir, settingsDir).forEach {
+            if (!it.isDirectory && !it.mkdirs() && !it.isDirectory) ok = false
         }
+        return ok
     }
 }

@@ -2,15 +2,18 @@ package com.ilyskyo.blancall.desktop.ui
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -37,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,7 +52,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -57,6 +68,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.ilyskyo.blancall.algorithm.StudyCoach
 import com.ilyskyo.blancall.data.model.Article
 import com.ilyskyo.blancall.data.repository.HomeLayoutStore
@@ -72,6 +84,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 
 private val HOME_PULL_MAX = 84.dp
 private val ROW_UNIT = 92.dp
@@ -204,29 +218,26 @@ fun HomeScreen(state: AppState) {
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SearchBar(
-                    placeholder = "搜索标题、正文或日期",
+                    placeholder = "搜索",
                     onClick = { state.navigate(Screen.Search) },
                     modifier = Modifier.weight(1f),
-                    trailing = {
-                        Box(
-                            Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null,
-                                ) { state.navigate(Screen.Settings) },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Outlined.Settings,
-                                contentDescription = "设置",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                    },
                 )
+                Spacer(Modifier.width(10.dp))
+                // 与 Android 一致：设置是独立的 48dp 方钮，不再塞在搜索框内部
+                DesktopTooltip("设置") {
+                    GlassButton(
+                        onClick = { state.navigate(Screen.Settings) },
+                        modifier = Modifier.size(48.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                    ) {
+                        SettingsGearIcon(
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier
+                                .size(22.dp)
+                                .semantics { contentDescription = "设置" },
+                        )
+                    }
+                }
             }
             Spacer(Modifier.height(14.dp))
             Box(
@@ -243,7 +254,7 @@ fun HomeScreen(state: AppState) {
                 todayPracticeCount = todayCount,
                 dailyPracticeGoal = goal,
                 showDailyGoal = state.reminderPrefs.showDailyGoalOnCard,
-                onOpenAll = { state.navigate(Screen.StudyFlow) },
+                onOpenAll = { state.navigate(Screen.TodayPlan) },
                 onStartItem = { item -> startPlanItem(state, item) },
             )
             Spacer(Modifier.height(12.dp))
@@ -265,23 +276,49 @@ fun HomeScreen(state: AppState) {
                 onResume = { state.navigate(Screen.Practice(it)) },
                 onOpenSentence = { state.navigate(Screen.SentenceCards()) },
                 onOpenStats = { state.navigate(Screen.Statistics()) },
-                onOpenDue = { state.navigate(Screen.Articles) },
+                onOpenDue = { state.navigate(Screen.DueList) },
                 onOpenRecentAll = { state.navigate(Screen.Articles) },
                 onAddArticle = { state.navigate(Screen.Import) },
                 onLongPress = { editMode = true },
                 onDelete = { card -> persist(cards.filterNot { it.id == card.id }) },
-                onPinToggle = { card ->
+                onPinToggle = { card, row, col ->
                     persist(
                         cards.map {
                             if (it.id != card.id) it
                             else if (it.pinned) it.copy(pinned = false, lockRow = -1, lockCol = -1)
-                            else it.copy(pinned = true)
+                            else it.copy(pinned = true, lockRow = row, lockCol = col)
                         }
                     )
+                },
+                onResize = { card, colSpan, rowSpan ->
+                    persist(cards.map {
+                        if (it.id == card.id) it.copy(colSpan = colSpan, rowSpan = rowSpan) else it
+                    })
+                },
+                onMove = { id, delta ->
+                    val from = cards.indexOfFirst { it.id == id }
+                    val to = (from + delta).coerceIn(0, cards.lastIndex)
+                    if (from >= 0 && to != from) {
+                        val list = cards.toMutableList()
+                        val item = list.removeAt(from)
+                        list.add(to, item)
+                        // 拖动就是要换位置：继续沿用旧锁位会让卡「拖了但没动」
+                        persist(list.map {
+                            if (it.id == id) it.copy(pinned = false, lockRow = -1, lockCol = -1) else it
+                        })
+                    }
                 },
             )
             Spacer(Modifier.height(24.dp))
         }
+
+        DesktopScrollbar(
+            scrollState,
+            Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(top = 12.dp, bottom = 100.dp, end = 4.dp),
+        )
 
         if (editMode) {
             Row(
@@ -470,75 +507,145 @@ private fun HomeCardCanvas(
     onAddArticle: () -> Unit,
     onLongPress: () -> Unit,
     onDelete: (HomeLayoutStore.Card) -> Unit,
-    onPinToggle: (HomeLayoutStore.Card) -> Unit,
+    onPinToggle: (HomeLayoutStore.Card, Int, Int) -> Unit,
+    onResize: (HomeLayoutStore.Card, Int, Int) -> Unit,
+    onMove: (String, Int) -> Unit,
 ) {
-    val rows = remember(cards) { arrangeRows(cards) }
-    Column(verticalArrangement = Arrangement.spacedBy(COLUMN_GAP)) {
-        rows.forEach { row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(COLUMN_GAP)) {
-                row.forEach { card ->
-                    val height = ROW_UNIT * card.rowSpan - 10.dp
-                    Box(
-                        Modifier
-                            .weight(card.colSpan.toFloat())
-                            .height(height)
-                            .combinedClickableCard(
-                                onClick = {
-                                    if (editMode) return@combinedClickableCard
-                                    when (card.type) {
-                                        HomeLayoutStore.CardType.ADD_ARTICLE -> onAddArticle()
-                                        HomeLayoutStore.CardType.DUE -> onOpenDue()
-                                        HomeLayoutStore.CardType.CONTINUE -> resumables.firstOrNull()
-                                            ?.let { onResume(it.articleId) }
-                                        HomeLayoutStore.CardType.RECENT -> firstCard?.let { onOpenArticle(it.id) }
-                                        HomeLayoutStore.CardType.SENTENCE -> onOpenSentence()
-                                        HomeLayoutStore.CardType.STATS,
-                                        HomeLayoutStore.CardType.GLOBAL_STATS -> onOpenStats()
-                                        HomeLayoutStore.CardType.ARTICLE ->
-                                            if (card.refId > 0) onOpenArticle(card.refId)
-                                        HomeLayoutStore.CardType.CUSTOM_CLOZE ->
-                                            if (card.articleId > 0) onPracticeArticle(card.articleId)
-                                        HomeLayoutStore.CardType.CUSTOM_MASK ->
-                                            if (card.articleId > 0) onOpenArticle(card.articleId)
-                                    }
-                                },
-                                onLongClick = onLongPress,
-                            ),
-                    ) {
-                        HomeCardBody(
-                            card = card,
-                            articles = articles,
-                            dueArticles = dueArticles,
-                            resumables = resumables,
-                            recent = recent,
-                            sentence = sentence,
-                            stats = stats,
-                            onOpenArticle = onOpenArticle,
-                            onPracticeArticle = onPracticeArticle,
-                            onResume = onResume,
-                            onOpenSentence = onOpenSentence,
-                            onOpenStats = onOpenStats,
-                            onOpenDue = onOpenDue,
-                            onOpenRecentAll = onOpenRecentAll,
-                            onAddArticle = onAddArticle,
-                        )
-                        if (editMode) {
-                            Row(
+    var dragId by remember { mutableStateOf<String?>(null) }
+    var dragDy by remember { mutableFloatStateOf(0f) }
+
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        // 列数只看画布可用宽度：桌面窗口可以比平板更宽，也可以缩到手机宽度
+        val columns = homeGridColumns(maxWidth.value)
+        val slots = remember(cards, columns) { layoutHomeSlots(cards, columns) }
+        val totalRows = remember(cards, slots) { homeSlotRows(cards, slots) }
+        val colWidth = ((maxWidth - COLUMN_GAP * (columns - 1)) / columns).coerceAtLeast(0.dp)
+        val gridHeight = if (totalRows <= 0) 0.dp
+        else (ROW_UNIT + COLUMN_GAP) * totalRows - COLUMN_GAP
+
+        Box(Modifier.fillMaxWidth().height(gridHeight)) {
+            cards.forEach { card ->
+                val slot = slots[card.id] ?: return@forEach
+                val colSpan = card.colSpan.coerceIn(
+                    HomeLayoutStore.MIN_COL_SPAN, HomeLayoutStore.MAX_COL_SPAN
+                )
+                val rowSpan = card.rowSpan.coerceIn(
+                    HomeLayoutStore.MIN_ROW_SPAN, HomeLayoutStore.MAX_ROW_SPAN
+                )
+                val x = (colWidth + COLUMN_GAP) * slot[1]
+                val y = (ROW_UNIT + COLUMN_GAP) * slot[0]
+                val w = colWidth * colSpan + COLUMN_GAP * (colSpan - 1)
+                val h = (ROW_UNIT + COLUMN_GAP) * rowSpan - COLUMN_GAP
+
+                Box(
+                    Modifier
+                        .offset(x, y)
+                        .size(w, h)
+                        .graphicsLayer { translationY = if (dragId == card.id) dragDy else 0f }
+                        .zIndex(if (dragId == card.id) 5f else 0f)
+                        .combinedClickableCard(
+                            color = cardFill(card),
+                            onClick = {
+                                if (editMode) return@combinedClickableCard
+                                when (card.type) {
+                                    HomeLayoutStore.CardType.ADD_ARTICLE -> onAddArticle()
+                                    HomeLayoutStore.CardType.DUE -> onOpenDue()
+                                    HomeLayoutStore.CardType.CONTINUE -> resumables.firstOrNull()
+                                        ?.let { onResume(it.articleId) }
+                                    HomeLayoutStore.CardType.RECENT -> firstCard?.let { onOpenArticle(it.id) }
+                                    HomeLayoutStore.CardType.SENTENCE -> onOpenSentence()
+                                    HomeLayoutStore.CardType.STATS,
+                                    HomeLayoutStore.CardType.GLOBAL_STATS -> onOpenStats()
+                                    HomeLayoutStore.CardType.ARTICLE ->
+                                        if (card.refId > 0) onOpenArticle(card.refId)
+                                    HomeLayoutStore.CardType.CUSTOM_CLOZE ->
+                                        if (card.articleId > 0) onPracticeArticle(card.articleId)
+                                    HomeLayoutStore.CardType.CUSTOM_MASK ->
+                                        if (card.articleId > 0) onOpenArticle(card.articleId)
+                                }
+                            },
+                            onLongClick = onLongPress,
+                        ),
+                ) {
+                    HomeCardBody(
+                        card = card,
+                        articles = articles,
+                        dueArticles = dueArticles,
+                        resumables = resumables,
+                        recent = recent,
+                        sentence = sentence,
+                        stats = stats,
+                        onOpenArticle = onOpenArticle,
+                        onPracticeArticle = onPracticeArticle,
+                        onResume = onResume,
+                        onOpenSentence = onOpenSentence,
+                        onOpenStats = onOpenStats,
+                        onOpenDue = onOpenDue,
+                        onOpenRecentAll = onOpenRecentAll,
+                        onAddArticle = onAddArticle,
+                    )
+                    if (editMode) {
+                        Row(
+                            Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            EditCircle(
+                                icon = Icons.Outlined.PushPin,
+                                tint = if (card.pinned) MaterialTheme.colorScheme.primary else Color.Black,
+                                onClick = { onPinToggle(card, slot[0], slot[1]) },
+                            )
+                            EditCircle(
+                                icon = Icons.Outlined.Close,
+                                tint = Color.Black,
+                                onClick = { onDelete(card) },
+                            )
+                        }
+                        Row(
+                            Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            EditCircleText("⤢") {
+                                val presets = listOf(2 to 1, 1 to 1, 1 to 2, 2 to 2)
+                                val current = card.colSpan to card.rowSpan
+                                val i = presets.indexOf(current).takeIf { it >= 0 } ?: -1
+                                val next = presets[(i + 1).mod(presets.size)]
+                                onResize(card, next.first, next.second)
+                            }
+                            Box(
                                 Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = 0.94f))
+                                    .pointerInput(card.id) {
+                                        detectDragGestures(
+                                            onDragStart = {
+                                                dragId = card.id
+                                                dragDy = 0f
+                                            },
+                                            onDrag = { change, amount ->
+                                                change.consume()
+                                                dragDy += amount.y
+                                            },
+                                            onDragEnd = {
+                                                if (abs(dragDy) > 56.dp.toPx()) {
+                                                    onMove(card.id, if (dragDy > 0f) 1 else -1)
+                                                }
+                                                dragId = null
+                                                dragDy = 0f
+                                            },
+                                            onDragCancel = {
+                                                dragId = null
+                                                dragDy = 0f
+                                            },
+                                        )
+                                    },
+                                contentAlignment = Alignment.Center,
                             ) {
-                                EditCircle(
-                                    icon = Icons.Outlined.PushPin,
-                                    tint = if (card.pinned) MaterialTheme.colorScheme.primary else Color.Black,
-                                    onClick = { onPinToggle(card) },
-                                )
-                                EditCircle(
-                                    icon = Icons.Outlined.Close,
-                                    tint = Color.Black,
-                                    onClick = { onDelete(card) },
-                                )
+                                Text("⠿", style = MaterialTheme.typography.labelMedium, color = Color.Black)
                             }
                         }
                     }
@@ -548,20 +655,43 @@ private fun HomeCardCanvas(
     }
 }
 
+/**
+ * 卡片底色：与 Android 的 Macaron 映射一致。
+ * 白卡（最近文章）保持 surface，靠 1dp 描边分层。
+ */
+@Composable
+private fun cardFill(card: HomeLayoutStore.Card): Color {
+    val dark = isBlancallDark()
+    return when (card.type) {
+        HomeLayoutStore.CardType.DUE -> Macaron.fill(0, dark)
+        HomeLayoutStore.CardType.CONTINUE -> Macaron.fill(1, dark)
+        HomeLayoutStore.CardType.ARTICLE -> Macaron.fill(3, dark)
+        HomeLayoutStore.CardType.CUSTOM_CLOZE -> Macaron.fill(4, dark)
+        HomeLayoutStore.CardType.CUSTOM_MASK -> Macaron.fill(2, dark)
+        HomeLayoutStore.CardType.ADD_ARTICLE -> Macaron.fill(2, dark)
+        HomeLayoutStore.CardType.STATS -> Macaron.fill(4, dark)
+        HomeLayoutStore.CardType.GLOBAL_STATS -> Macaron.fill(5, dark)
+        HomeLayoutStore.CardType.SENTENCE -> Macaron.fill(2, dark)
+        HomeLayoutStore.CardType.RECENT -> MaterialTheme.colorScheme.surface
+    }
+}
+
 @Composable
 private fun Modifier.combinedClickableCard(
+    color: Color,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ): Modifier {
     val src = remember { MutableInteractionSource() }
+    val shape = SmoothRoundedCornerShape(24.dp)
     return this
         .pressFeedback(src)
-        .clip(SmoothRoundedCornerShape(20.dp))
-        .background(MaterialTheme.colorScheme.surface)
+        .clip(shape)
+        .background(color)
         .border(
             1.dp,
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-            SmoothRoundedCornerShape(20.dp),
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+            shape,
         )
         .combinedClickable(
             interactionSource = src,
@@ -569,6 +699,24 @@ private fun Modifier.combinedClickableCard(
             onClick = onClick,
             onLongClick = onLongClick,
         )
+}
+
+@Composable
+private fun EditCircleText(text: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(26.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = 0.94f))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, style = MaterialTheme.typography.labelMedium, color = Color.Black)
+    }
 }
 
 @Composable
@@ -816,17 +964,20 @@ private fun HomeCardBody(
 
 @Composable
 private fun CardHeader(title: String, accent: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(6.dp).clip(CircleShape).background(accent))
-        Spacer(Modifier.width(6.dp))
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(8.dp).clip(CircleShape).background(accent))
+        Spacer(Modifier.width(8.dp))
         Text(
             title,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
         )
     }
-    Spacer(Modifier.height(4.dp))
+    Spacer(Modifier.height(6.dp))
 }
 
 @Composable
@@ -927,18 +1078,55 @@ private fun AddCardOverlay(
     }
 }
 
-private fun arrangeRows(cards: List<HomeLayoutStore.Card>): List<List<HomeLayoutStore.Card>> {
-    val rows = mutableListOf<MutableList<HomeLayoutStore.Card>>()
-    var used = 2
-    cards.forEach { card ->
-        val span = card.colSpan.coerceIn(1, 2)
-        if (span >= 2 || used + span > 2) {
-            rows += mutableListOf(card)
-            used = span
-        } else {
-            rows.last().add(card)
-            used += span
+/**
+ * 自绘设置齿轮（与 Android 同一条轮廓）：
+ * 8 齿、齿顶/齿根 smoothstep 过渡、1.5dp 圆头描边；小尺寸下不会出现锯齿。
+ */
+@Composable
+private fun SettingsGearIcon(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val sc = size.minDimension / 24f
+        val c = center
+        val teeth = 8
+        val period = 360f / teeth
+        val tipRadius = 9.3f * sc
+        val rootRadius = 7.3f * sc
+        val tipHalf = 9.5f
+        val rootHalf = 15.5f
+
+        fun smoothstep(t: Float): Float {
+            val x = t.coerceIn(0f, 1f)
+            return x * x * (3f - 2f * x)
         }
+
+        fun radiusAt(deg: Float): Float {
+            val offset = ((deg + period / 2f) % period) - period / 2f
+            val u = abs(offset)
+            return when {
+                u <= tipHalf -> tipRadius
+                u >= rootHalf -> rootRadius
+                else -> tipRadius + (rootRadius - tipRadius) *
+                    smoothstep((u - tipHalf) / (rootHalf - tipHalf))
+            }
+        }
+
+        val steps = 240
+        val path = Path()
+        for (i in 0..steps) {
+            val deg = i * 360f / steps
+            val rad = Math.toRadians((deg - 90f).toDouble())
+            val r = radiusAt(deg)
+            val x = c.x + (r * cos(rad)).toFloat()
+            val y = c.y + (r * sin(rad)).toFloat()
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        path.close()
+        val stroke = Stroke(
+            width = 1.5f * sc,
+            cap = StrokeCap.Round,
+            join = StrokeJoin.Round,
+        )
+        drawPath(path, color = color, style = stroke)
+        drawCircle(color = color, radius = 3.0f * sc, center = c, style = stroke)
     }
-    return rows
 }

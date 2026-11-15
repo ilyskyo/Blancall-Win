@@ -56,25 +56,30 @@ object AtomicFiles {
     /** 写二进制内容到 [file]，原子替换（导入整库时也走这条）。 */
     fun writeBytesAtomic(file: File, bytes: ByteArray) {
         val dir = file.parentFile ?: throw IOException("no parent dir: ${file.absolutePath}")
-        dir.mkdirs()
-        synchronized(lockOf(file)) {
-            // 兼容旧版固定命名 `<name>.tmp`：v7.6 及以前所有 tmp 都叫这个名字，
-            // 升级后第一次写就要把它清掉，否则历史残留永远留着（既占空间，
-            // 也让「读到半截 tmp」这类人工排查被误导）。
-            runCatching { File(dir, file.name + ".tmp").delete() }
-            // tmp 名带 UUID：即便有调用方绕过这把锁，也不会出现「两个写者截断同一个 tmp」
-            val tmp = File(dir, file.name + "." + UUID.randomUUID().toString().take(8) + ".tmp")
-            try {
-                FileOutputStream(tmp).use { out ->
-                    out.write(bytes)
-                    runCatching { out.fd.sync() }
+        try {
+            ensureDirectory(dir)
+            synchronized(lockOf(file)) {
+                // 兼容旧版固定命名 `<name>.tmp`：v7.6 及以前所有 tmp 都叫这个名字，
+                // 升级后第一次写就要把它清掉，否则历史残留永远留着（既占空间，
+                // 也让「读到半截 tmp」这类人工排查被误导）。
+                runCatching { File(dir, file.name + ".tmp").delete() }
+                // tmp 名带 UUID：即便有调用方绕过这把锁，也不会出现「两个写者截断同一个 tmp」
+                val tmp = File(dir, file.name + "." + UUID.randomUUID().toString().take(8) + ".tmp")
+                try {
+                    FileOutputStream(tmp).use { out ->
+                        out.write(bytes)
+                        runCatching { out.fd.sync() }
+                    }
+                    rotateBackup(file)
+                    moveAtomic(tmp, file)
+                    fsyncDirectoryBestEffort(dir)
+                } finally {
+                    if (tmp.exists()) tmp.delete()
                 }
-                rotateBackup(file)
-                moveAtomic(tmp, file)
-                fsyncDirectoryBestEffort(dir)
-            } finally {
-                if (tmp.exists()) tmp.delete()
             }
+        } catch (e: Exception) {
+            StorageHealth.report(file, e)
+            throw e
         }
     }
 
@@ -84,10 +89,16 @@ object AtomicFiles {
      * 磁盘满 / 写中断这些失败就都在碰正式文件之前暴露。
      */
     fun writeStaged(staged: File, bytes: ByteArray) {
-        staged.parentFile?.mkdirs()
-        FileOutputStream(staged).use { out ->
-            out.write(bytes)
-            runCatching { out.fd.sync() }
+        val dir = staged.parentFile ?: throw IOException("no parent dir: ${staged.absolutePath}")
+        try {
+            ensureDirectory(dir)
+            FileOutputStream(staged).use { out ->
+                out.write(bytes)
+                runCatching { out.fd.sync() }
+            }
+        } catch (e: Exception) {
+            StorageHealth.report(staged, e)
+            throw e
         }
     }
 
@@ -97,11 +108,16 @@ object AtomicFiles {
      */
     fun promoteStaged(staged: File, file: File) {
         val dir = file.parentFile ?: throw IOException("no parent dir: ${file.absolutePath}")
-        dir.mkdirs()
-        synchronized(lockOf(file)) {
-            rotateBackup(file)
-            moveAtomic(staged, file)
-            fsyncDirectoryBestEffort(dir)
+        try {
+            ensureDirectory(dir)
+            synchronized(lockOf(file)) {
+                rotateBackup(file)
+                moveAtomic(staged, file)
+                fsyncDirectoryBestEffort(dir)
+            }
+        } catch (e: Exception) {
+            StorageHealth.report(file, e)
+            throw e
         }
     }
 
@@ -118,19 +134,25 @@ object AtomicFiles {
      */
     fun appendTextLines(file: File, lines: List<String>) {
         if (lines.isEmpty()) return
-        file.parentFile?.mkdirs()
-        synchronized(lockOf(file)) {
-            FileOutputStream(file, true).use { out ->
-                for (line in lines) {
-                    val body = line.toByteArray(Charsets.UTF_8)
-                    val chunk = ByteArray(body.size + 1)
-                    body.copyInto(chunk)
-                    chunk[body.size] = '\n'.code.toByte()
-                    out.write(chunk)
+        val dir = file.parentFile ?: throw IOException("no parent dir: ${file.absolutePath}")
+        try {
+            ensureDirectory(dir)
+            synchronized(lockOf(file)) {
+                FileOutputStream(file, true).use { out ->
+                    for (line in lines) {
+                        val body = line.toByteArray(Charsets.UTF_8)
+                        val chunk = ByteArray(body.size + 1)
+                        body.copyInto(chunk)
+                        chunk[body.size] = '\n'.code.toByte()
+                        out.write(chunk)
+                    }
+                    runCatching { out.fd.sync() }
                 }
-                runCatching { out.fd.sync() }
+                fsyncDirectoryBestEffort(file.parentFile)
             }
-            fsyncDirectoryBestEffort(file.parentFile)
+        } catch (e: Exception) {
+            StorageHealth.report(file, e)
+            throw e
         }
     }
 
@@ -195,6 +217,20 @@ object AtomicFiles {
             FileOutputStream(dst).use { output -> input.copyTo(output, DEFAULT_BUFFER_SIZE) }
         }
         src.delete()
+    }
+
+    /**
+     * macOS/Windows 上 `mkdirs()` 失败时返回 false 而不是抛异常；
+     * 低完整性令牌、只读目录、安全软件拦截都会走到这里。若不显式检查，
+     * 错误会在后面的 FileOutputStream 才以「系统找不到指定的路径」暴露，
+     * 用户看到的只是 tmp 文件名，完全不知道是数据目录不可写。
+     */
+    private fun ensureDirectory(dir: File) {
+        if (dir.isDirectory) return
+        if (dir.mkdirs() || dir.isDirectory) return
+        throw IOException(
+            "数据目录不可写：${dir.absolutePath}。请确认目录存在、当前用户有写权限，且未被安全软件拦截。",
+        )
     }
 
     /**

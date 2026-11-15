@@ -288,7 +288,11 @@ class ArticleStorage(private val filePath: String) {
         if (articles.isEmpty()) return emptyList()
         awaitLoaded()
         return fileMutex.withLock {
+            var before: List<Article> = emptyList()
+            var beforeNextId = 0L
             val created = synchronized(stateLock) {
+                before = _articles.value
+                beforeNextId = nextId
                 val out = ArrayList<Article>(articles.size)
                 for (article in articles) {
                     val id = maxOf(nextId, idCursor + 1L)
@@ -303,7 +307,18 @@ class ArticleStorage(private val filePath: String) {
             persistIdCursor()
             // 内存变更与落盘同持一把锁：reload 不可能落在两者之间，
             // 否则「导入换文件 → 旧快照写回」会把刚恢复的数据覆盖。
-            saveToFileLocked()
+            try {
+                saveToFileLocked()
+            } catch (e: Exception) {
+                // 内存先于落盘变更，失败必须回滚；否则列表里能看到文章，
+                // 重启后却消失（用户实测的「保存失败但文章已出现」）。
+                synchronized(stateLock) {
+                    _articles.value = before
+                    // idCursor 故意不回退：已经写出的 id 不再复用，避免旧划线/记录挂错篇。
+                    nextId = maxOf(beforeNextId, idCursor + 1L)
+                }
+                throw e
+            }
             created.map { it.id }
         }
     }
@@ -311,12 +326,19 @@ class ArticleStorage(private val filePath: String) {
     suspend fun update(article: Article) {
         awaitLoaded()
         fileMutex.withLock {
-            synchronized(stateLock) {
-                _articles.value = _articles.value.map {
+            val before = synchronized(stateLock) {
+                val old = _articles.value
+                _articles.value = old.map {
                     if (it.id == article.id) article else it
                 }
+                old
             }
-            saveToFileLocked()
+            try {
+                saveToFileLocked()
+            } catch (e: Exception) {
+                synchronized(stateLock) { _articles.value = before }
+                throw e
+            }
         }
     }
 
@@ -327,10 +349,17 @@ class ArticleStorage(private val filePath: String) {
         if (ids.isEmpty()) return
         awaitLoaded()
         fileMutex.withLock {
-            synchronized(stateLock) {
-                _articles.value = _articles.value.filter { it.id !in ids }
+            val before = synchronized(stateLock) {
+                val old = _articles.value
+                _articles.value = old.filter { it.id !in ids }
+                old
             }
-            saveToFileLocked()
+            try {
+                saveToFileLocked()
+            } catch (e: Exception) {
+                synchronized(stateLock) { _articles.value = before }
+                throw e
+            }
         }
     }
 

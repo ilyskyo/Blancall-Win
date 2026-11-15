@@ -156,3 +156,125 @@
 | 正式安装包的快捷方式/卸载注册项 | 未验证（环境） | 本环境限制未签名程序写开始菜单与 `HKCU`（PowerShell 与已签名程序可写，自签名仍被拒绝）；需普通用户会话点验 |
 | MSI | 阻塞（环境） | 同 0.4.0：`light.exe` 临时目录特权受限；EXE 安装包已替代 |
 
+
+## 8. 2026-11-14 增量（0.5.0-win：对齐 Android 平板 UI + 自适应断点）
+
+### 设计基准
+
+- 平板实机截图（3048×2032 @400dpi ≈ 1219×813dp）：`D:\Blancall\.screenshots\pad-home.png`、`pad-articles2.png`、`pad-data2.png`、`pad-reader2.png`（仓库外）。
+- 默认字体以**系统衬线**为准（与 Android `AppearanceSnapshot.FONT_SERIF` 默认一致）；霞鹜文楷改为设置项，不再是默认。
+- 默认底色纯白（米黄关闭），断点 600dp（与 Android `Adaptive.kt` 一致）。
+
+### 自动化
+
+| 命令 | 结果 |
+|---|---|
+| `gradlew :shared:test :desktop:test` | BUILD SUCCESSFUL |
+| 新增 `AdaptiveTest` | 断点 599/600/839/840、首页列数 2–6、双栏 720×480 阈值 |
+| 新增 `HomeGridTest` | 钉住优先、首次适配、跨行卡绕行、越界 lock 收敛 |
+| `ScreenshotRenderTest` 多档渲染 | 1200×800 / 800×800 / 520×800 / 420×640 / 150% 缩放各页截图 |
+
+### 截图证据（离屏渲染，仓库内 `desktop/_shots/`，不入发布包）
+
+| 窗口 | 壳层 | 截图 |
+|---|---|---|
+| 1200×800 | 左侧 rail + 首页 2 列卡片 | `render_home.png` / `render_articles.png` / `render_reader.png` / `render_practice.png` / `render_settings.png` |
+| 800×800 | 左侧 rail | `render_home_medium.png` |
+| 520×800 | 底部导航 + 单列 | `render_home_narrow.png` / `render_articles_narrow.png` / `render_practice_narrow.png` |
+| 420×640 | 底部导航 + 单列 | `render_home_min.png` |
+| 1200×800 @150% | 800dp 逻辑宽，仍为 rail，无裁切 | `render_home_dpi150.png` |
+| 深色 | `#1C1C1E` 底 + 马卡龙暗色卡 | `render_home_dark.png` / `render_articles_dark.png` |
+
+### 安装包
+
+| 文件 | 大小 | 说明 |
+|---|---:|---|
+| `dist\Blancall-7.6.1-win-x64-setup.exe` | 129.5 MB | 自绘单文件安装向导（WinForms）；payload 直接解到安装目录，预置 `BlancallUninstall.exe` |
+| `dist\Blancall-7.6.1-win-x64-portable.zip` | 129.3 MB | 解压后双击 `Blancall.exe`；同样含卸载器 |
+
+### 安装器（自绘向导，规避 Inno 在本机的两类拒绝）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| Inno 失败复现 A | 已复现 | 非管理员运行 Inno：`%TEMP%\is-*.tmp` 创建失败（Error 5，exit 1） |
+| Inno 失败复现 B | 已复现 | 绕过 Temp 后，Inno 在「保存卸载信息」创建卸载器文件失败（`CreateFile` code 5） |
+| 自绘向导编译 | PASS | `tools/installer/BlancallInstaller.cs` + `BlancallUninstall.cs`；csc exit 0 |
+| 静默安装 | PASS | `setup.exe /SILENT /NOICONS /DIR=C:\Users\ilysk\AppData\Local\BlancallTest2` exit 0；`Blancall.exe`、`BlancallUninstall.exe`、`LICENSE`、jar、runtime、models、docs 全部落盘 |
+| 程序运行中安装 | PASS | 独占打开 `app\blancall-win.jar` 模拟运行占用：`InstallCore` 在解包前抛出六语 `ErrLocked`（英文实测：`Blancall is running, or an installation file is in use...`），不再落到裸 `UnauthorizedAccessException` |
+| 高 DPI 向导 | PASS | 本机 2256×1504 @200%；向导为 1286×991 物理 / 643×496 逻辑，欢迎/目录/完成三页截图无裁切；仅缩放布局，字号交由 GDI 按 DPI 渲染（避免 4 倍字） |
+| 六语言向导 | PASS | 系统语言自动选中简体中文；用测试钩子分别渲染简中 / 俄 / 日 / 韩欢迎页截图，长俄文在 230dp 信息区内完整换行 |
+| 旧启动脚本清理 | PASS | payload 解包前删除安装目录的 `Blancall.vbs` / `Blancall.bat` |
+| 预置卸载器 | PASS | `BlancallUninstall.exe /SILENT` exit 0；程序目录删除；`%LOCALAPPDATA%\Blancall` 学习数据保留 |
+| MIT 许可证 | PASS | 欢迎页以信息文本 +「查看完整 MIT 许可证」弹窗展示，无「同意 / 拒绝」；`LICENSE` 随程序安装 |
+| 桌面/开始菜单快捷方式 | 部分验证（环境） | 开始菜单快捷方式在受限变体通过；桌面 `.lnk` 与 HKCU 卸载项在当前沙箱返回 `0x80070005`，普通用户会话可用 |
+| UI 向导 | PASS | PrintWindow 实测欢迎/目录/完成页：`setup-prod-welcome.png`、`setup-2x-zh-options.png`、`setup-2x-ko-finish.png`；语言下拉与 MIT 信息页、无「同意 / 拒绝」均可见 |
+| 发布产物 SHA-256 | 记录 | `Blancall-7.6.1-win-x64-setup.exe`：`0F603A7E5BC56B9712BADF60120B947C83D92658DABFC2F29E87FB7E05448D73`；`Blancall-7.6.1-win-x64-portable.zip`：`0B27B9E38C5BA82258BBC30DDA1D7DB7E6F38341E9E30E8255EB438C35E5515A` |
+
+## 5. 2026-11-15 增量（0.6.0-win）
+
+### 自动化
+
+| 命令 | 结果 |
+|---|---|
+| `gradlew :shared:test :desktop:test` | BUILD SUCCESSFUL；新增 `NavigationPolicyTest`、`I18nUiGuardTest`、`I18nCoverageTest`、`ArticleStorageRollbackTest`、`AtomicFilesTest` 目录错误用例 |
+| `gradlew :desktop:uberJar` | BUILD SUCCESSFUL |
+| 离屏截图 | `ScreenshotRenderTest` 全绿，产出详情/阅读模式/阅读设置/五分类设置/英文设置/深色/保存失败横幅 |
+
+### 手工
+
+| 项 | 状态 | 证据/说明 |
+|---|---|---|
+| 开发 jar 实际启动 | PASS | 200% DPI；原生菜单栏（文件/视图/帮助）、雅黑界面、左侧 rail、右侧滚动条均可见；截图 `_tools/ui-check/real-home.png` |
+| 窗口最小尺寸 | PASS | 改为 900×600，不再缩到手机宽度 |
+| 阅读设置宽/窄形态 | PASS（离屏） | 宽窗右侧 Inspector、窄窗底部面板；`render_reading_settings.png` / `render_reading_settings_narrow.png` |
+| 英文设置页 | PASS（离屏） | 顶栏/分类/设置行/分段/下拉均为英文，语言名保留各自写法；`render_settings_en.png` |
+| 深色模式 | PASS（离屏） | 详情/阅读模式/设置无浅色不透明底；`render_detail_dark.png` / `render_reading_mode_dark.png` / `render_settings_dark.png` |
+| 点按级走查 | 未完成（环境） | 当前沙箱的鼠标输入与交互桌面隔离，`WindowFromPoint` 返回 0，无法自动点按；需普通用户会话按 README 的 UI 点验清单走一遍 |
+
+## 9. 2026-11-15 增量（0.7.0-win）
+
+### 自动化
+
+| 命令 | 结果 |
+|---|---|
+| `gradlew :shared:test :desktop:test` | BUILD SUCCESSFUL；desktop 51 项（新增 `MaskToClozeTest` 3 例），shared 全量通过 |
+| `gradlew :desktop:compileKotlin` | BUILD SUCCESSFUL（含 Logback 1.5.16） |
+
+### 实现与证据
+
+| 项 | 状态 | 证据/说明 |
+|---|---|---|
+| 内容包拖拽 ZIP | PASS（代码 + 单测覆盖存储边界） | 拖入 ZIP 先判别备份包（`manifest.json` + `files/`），备份包只提示到设置页导入；内容包走 `ContentPackStore.import` |
+| 素材库篇目预览 | PASS（编译） | 内容包展开后可预览正文、仅导入、导入并阅读；正文仍由 shared Store 读取 |
+| 遮挡转练习 | PASS（自动化） | `MaskToClozeTest`：本地长遮挡坐标合法、重叠/相邻合并、跨句按句裁剪；UI 入口在阅读设置「用当前遮挡开始练习」 |
+| 托盘菜单 | PASS（编译） | 「打开 Blancall / 今日复习 / 设置 / 退出」；双击托盘图标打开主窗 |
+| 开机自启 | PASS（代码） | `Autostart` 写 HKCU Run，安装版指向 `Blancall.exe`，开发运行指向 `java -jar`；受限环境无权限写 HKCU，需真实会话点验 |
+| 任务栏进度 | PASS（代码） | 练习页进入时 `TaskbarProgress.indeterminate()`，退出清理；不支持任务栏的 JDK 静默降级 |
+| 自定义字体导入 | PASS（编译） | 阅读设置导入 TTF/OTF，复制到 `fonts/`；偏好只存字体 id，缺失自动回落 |
+| 滚动日志 | PASS（代码） | Logback `logs/blancall.log` 10 MB × 5；`shared` 的 `Log.sink` 汇入；异常另写 `crash-<ts>.log` |
+| 六语言词表 | PASS（自动化） | 五套非简中词表各 964 条 key 集合一致；新增 UI 文案均有英文词条（`I18nCoverageTest`） |
+| 设置日期行布局 | PASS（离屏截图） | `render_settings_study.png`：修复日期字段吃掉整行宽度导致「考试日期」竖排；触发器 170–200dp，标题与说明正常横排 |
+| MSI 打包链路 | 阻塞（环境） | `jpackage + WiX 3.14` 已写入 `tools/package-windows.ps1`；探针复现 `light.exe` `CreateTempDirectoryWithAce` 返回「客户端没有所需的特权」；普通用户会话可生成 |
+| 便携/EXE 包 | PASS | `dist\Blancall-7.6.1-win-x64-setup.exe`（125.4 MB）与 `-portable.zip`（125.0 MB）；app image 启动冒烟通过 |
+
+## 10. 2026-11-15 产物（0.7.0-win）
+
+| 文件 | 大小 | SHA-256 |
+|---|---:|---|
+| `dist\Blancall-7.6.1-win-x64-setup.exe` | 125.4 MB | `70A7B6F0320CBD4BC913460C04A5F19A8161C41BB27BB5C1C27C257073A6660C` |
+| `dist\Blancall-7.6.1-win-x64-portable.zip` | 125.0 MB | `F59583CA26A9CA89E3B65FF2D6DAC7DE9B6D3D71CEBDB3BF0C07C378FDF2530A` |
+| `dist\Blancall-7.6.1-win-x64.msi` | — | 仅当 `light.exe` 可运行时生成；受限环境跳过 |
+
+启动冒烟：app image 的 `Blancall.exe` 在隔离 `%LOCALAPPDATA%` 下启动成功（窗口标题 `Blancall`、`Responding=True`），
+`logs\blancall.log` 写入 `startup: data=...`，验证 Logback 文件日志与共享日志 sink 均在运行态生效。
+
+### 待真实会话点验
+
+1. 设置 → 外观 → 界面语言切 English，确认导航/顶栏/设置行即时变英文。
+2. 首页打开文章 → 详情页 →「阅读模式」进入全屏阅读 → Aa 打开 Inspector → Esc 关闭。
+3. 断网/只读目录下导入文章，确认保存失败横幅常驻且列表不出现假文章。
+4. 窄窗口与 125% / 150% / 200% 缩放下检查设置 master-detail 与阅读 Inspector 不裁切。
+5. 阅读 → 打开遮挡 →「用当前遮挡开始练习」，确认生成的空位与挡片一致。
+6. 拖入一个内容包 ZIP 与一个备份 ZIP，确认前者进素材库、后者只提示到设置页导入。
+7. 托盘菜单「今日复习 / 设置」与设置 → 开机自启开关在普通用户会话点验。
+

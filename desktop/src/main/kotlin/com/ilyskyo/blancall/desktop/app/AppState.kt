@@ -27,6 +27,7 @@ import com.ilyskyo.blancall.data.contentpack.ContentPackStore
 import com.ilyskyo.blancall.desktop.platform.AppPaths
 import com.ilyskyo.blancall.desktop.platform.ReminderScheduler
 import com.ilyskyo.blancall.desktop.handwriting.HandwritingRecognizer
+import com.ilyskyo.blancall.util.StorageHealth
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -66,6 +67,20 @@ class AppState(
     val reminderPrefs = ReminderPrefs(File(settingsDir, "reminder.properties"), dataDir)
     val reminders = ReminderScheduler(this)
     val handwriting = HandwritingRecognizer()
+
+    init {
+        // 共享 Store 的写失败统一走这里：AtomicFiles 抛错前广播一次，
+        // 避免各 Store 各自 catch 后静默，用户只看到「设置改了但没生效」。
+        StorageHealth.listener = { file, error ->
+            reportStorageError(
+                Strings.f(
+                    "{0} 写入失败：{1}",
+                    file.name,
+                    error.message ?: error.javaClass.simpleName,
+                ),
+            )
+        }
+    }
 
     /** 通知出口：主窗口创建后注入托盘气泡；未注入时退回应用内提示。 */
     @Volatile
@@ -139,6 +154,14 @@ class AppState(
         private set
     var toast by mutableStateOf<String?>(null)
         private set
+    /**
+     * 持久化失败横幅。
+     *
+     * Toast 2.6 秒就消失，用户会以为「保存失败」只是一次误报；
+     * 数据没落盘必须一直可见，直到用户看到并处理。
+     */
+    var storageError by mutableStateOf<String?>(null)
+        private set
     /** 首启欢迎页（设置里可重播） */
     var showWelcome by mutableStateOf(!prefs.welcomeShown)
         private set
@@ -176,6 +199,42 @@ class AppState(
 
     fun canGoBack(): Boolean = backStack.isNotEmpty()
 
+    // Esc 的优先级：最上层弹层/面板先消费，没人消费才回退导航。
+    // 页面里的模态层不能各自去监听窗口按键（会与 Main.kt 的全局 Esc 打架），
+    // 统一在这里登记，保证「面板打开时按 Esc 只关面板，不退出页面」。
+    private val escapeHandlers = ArrayDeque<() -> Boolean>()
+
+    /** 返回移除函数；调用方在 onDispose 里移除，避免页面销毁后残留。 */
+    fun pushEscapeHandler(handler: () -> Boolean): () -> Unit {
+        escapeHandlers.addLast(handler)
+        return { escapeHandlers.remove(handler) }
+    }
+
+    /** @return true 表示已被最上层 UI 消费（不再执行返回导航）。 */
+    fun handleEscape(): Boolean {
+        val handler = escapeHandlers.lastOrNull()
+        if (handler != null && handler()) return true
+        if (canGoBack()) {
+            back()
+            return true
+        }
+        return false
+    }
+
+    // Ctrl+S 与 Esc 同一套栈：页面自己有编辑态时优先保存，
+    // 没有编辑态就不要假装保存成功。
+    private val saveHandlers = ArrayDeque<() -> Boolean>()
+
+    fun pushSaveHandler(handler: () -> Boolean): () -> Unit {
+        saveHandlers.addLast(handler)
+        return { saveHandlers.remove(handler) }
+    }
+
+    fun handleSave(): Boolean {
+        val handler = saveHandlers.lastOrNull() ?: return false
+        return handler()
+    }
+
     fun showToast(message: String) {
         toast = message
         scope.launch {
@@ -188,11 +247,27 @@ class AppState(
         toast = null
     }
 
+    /** 落盘失败：横幅常驻，且不再用「看起来保存成功」的内存状态骗人。 */
+    fun reportStorageError(action: String, error: Throwable) {
+        storageError = Strings.f("{0}失败：{1}", action, error.message ?: error.javaClass.simpleName)
+    }
+
+    fun reportStorageError(message: String) {
+        storageError = message
+    }
+
+    fun dismissStorageError() {
+        storageError = null
+    }
+
     suspend fun reloadAll() {
         articles.reload()
         records.reload()
         fsrs.reload()
         reminderPrefs.reloadExamGoal()
+        readerPrefs.reload()
+        maskConfig.reload()
+        readingMarks.reload()
         runCatching { tags.snapshot() }
     }
 

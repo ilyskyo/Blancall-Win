@@ -8,6 +8,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 
 /**
@@ -79,5 +80,17 @@ class AtomicFilesTest {
         AtomicFiles.writeTextAtomic(f, "")
         assertTrue(f.exists())
         assertEquals("", f.readText())
+    }
+
+    @Test
+    fun `父路径是文件时给出可读的目录错误`() {
+        val blocker = File(tempDir(), "blocked").apply { writeText("not a directory") }
+        val f = File(blocker, "store.json")
+        val error = runCatching { AtomicFiles.writeTextAtomic(f, "content") }.exceptionOrNull()
+        assertTrue("必须抛 IOException，实际：$error", error is IOException)
+        assertTrue(
+            "错误应指向目录不可写，而不是只给 tmp 文件名：${error?.message}",
+            error?.message.orEmpty().contains("数据目录不可写"),
+        )
     }
 }

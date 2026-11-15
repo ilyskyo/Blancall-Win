@@ -21,6 +21,7 @@ dependencies {
     implementation(libs.apache.poi.scratchpad)
     implementation(libs.org.json)
     implementation(libs.jna)
+    implementation(libs.logback.classic)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.junit.jupiter)

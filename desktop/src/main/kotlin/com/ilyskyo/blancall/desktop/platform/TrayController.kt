@@ -1,5 +1,6 @@
 package com.ilyskyo.blancall.desktop.platform
 
+import com.ilyskyo.blancall.desktop.app.Strings
 import java.awt.Color
 import java.awt.Font
 import java.awt.Graphics2D
@@ -13,10 +14,13 @@ import java.awt.Window
 import javax.imageio.ImageIO
 /**
  * 托盘：关闭到托盘后仍可接收提醒/快速回到应用。
+ * 菜单固定为「打开 Blancall / 今日复习 / 设置 / 退出」，与 ARCHITECTURE §9 一致。
  * 托盘不可用时静默降级（不崩溃）。
  */
 class TrayController(
     private val window: Window,
+    private val onToday: () -> Unit,
+    private val onSettings: () -> Unit,
     private val onExit: () -> Unit,
 ) {
     private var trayIcon: TrayIcon? = null
@@ -26,11 +30,17 @@ class TrayController(
             if (SystemTray.isSupported()) {
                 val tray = SystemTray.getSystemTray()
                 val menu = PopupMenu()
-                val open = MenuItem("打开 Blancall")
+                val open = MenuItem(Strings.t("打开 Blancall"))
                 open.addActionListener { showWindow() }
-                val exit = MenuItem("退出")
+                val today = MenuItem(Strings.t("今日复习"))
+                today.addActionListener { onToday() }
+                val settings = MenuItem(Strings.t("设置"))
+                settings.addActionListener { onSettings() }
+                val exit = MenuItem(Strings.t("退出"))
                 exit.addActionListener { onExit() }
                 menu.add(open)
+                menu.add(today)
+                menu.add(settings)
                 menu.add(exit)
                 val icon = TrayIcon(loadIcon() ?: createIcon(), "Blancall", menu)
                 icon.addActionListener { showWindow() }

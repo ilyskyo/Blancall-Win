@@ -33,7 +33,14 @@ data class ReaderPrefs(
     val occlusionEnabled: Boolean,
     val occlusionMode: String,
     val occlusionColor: Int,
-    val occlusionCustomConfigId: Long
+    val occlusionCustomConfigId: Long,
+    /**
+     * 整篇阅读进度 0..1。
+     *
+     * 字段名 Android 端不识别，会在读盘时忽略；Windows 写回时保留。
+     * 章节翻页模式按「当前章 + 章内滚动」折算，恢复时可直接落到对应位置。
+     */
+    val progress: Float = 0f
 )
 
 class ReaderPrefsStore internal constructor(private val file: File) {
@@ -71,7 +78,8 @@ class ReaderPrefsStore internal constructor(private val file: File) {
                 occlusionEnabled = o.optBoolean("occlusionEnabled", false),
                 occlusionMode = o.optString("occlusionMode", "long"),
                 occlusionColor = o.optInt("occlusionColor", 0),
-                occlusionCustomConfigId = o.optLong("occlusionCustomConfigId", -1L)
+                occlusionCustomConfigId = o.optLong("occlusionCustomConfigId", -1L),
+                progress = o.optDouble("progress", 0.0).toFloat().coerceIn(0f, 1f),
             )
         }
     }
@@ -116,14 +124,19 @@ class ReaderPrefsStore internal constructor(private val file: File) {
         } catch (_: Exception) { /* 保留失败不影响主流程 */ }
     }
 
-    /** 必须在 [lock] 内调用：整表回写，因此调用方的 map 就是最新内存镜像。 */
-    private fun writeLocked(map: Map<Long, ReaderPrefs>) {
+    /**
+     * 必须在 [lock] 内调用：整表回写，因此调用方的 map 就是最新内存镜像。
+     *
+     * @return false = 未落盘（读盘损坏保护或写盘异常）。调用方必须回滚内存，
+     * 否则界面显示已改、重启后消失。
+     */
+    private fun writeLocked(map: Map<Long, ReaderPrefs>): Boolean {
         if (loadFailed) {
             Log.e(
                 "ReaderPrefsStore",
                 "读取失败，已阻止写盘以免抹掉其余文章的阅读存档：${file.absolutePath}"
             )
-            return
+            return false
         }
         try {
             val articles = JSONObject()
@@ -141,6 +154,7 @@ class ReaderPrefsStore internal constructor(private val file: File) {
                         put("occlusionMode", p.occlusionMode)
                         put("occlusionColor", p.occlusionColor)
                         put("occlusionCustomConfigId", p.occlusionCustomConfigId)
+                        put("progress", p.progress.toDouble())
                     }
                 )
             }
@@ -152,9 +166,11 @@ class ReaderPrefsStore internal constructor(private val file: File) {
                     put("articles", articles)
                 }.toString()
             )
+            return true
         } catch (e: Exception) {
             // 旧实现是空 catch：写失败必须留日志，否则「改了设置没生效」根本无从排查
             Log.e("ReaderPrefsStore", "阅读设置落盘失败：${file.absolutePath}", e)
+            return false
         }
     }
 
@@ -166,12 +182,20 @@ class ReaderPrefsStore internal constructor(private val file: File) {
         synchronized(lock) { cache = null }
     }
 
-    /** 写入该文章的存档（用户每次改设置即调用）。 */
+    /**
+     * 写入该文章的存档（用户每次改设置即调用）。
+     *
+     * 写盘失败时回滚内存：缓存是整表镜像，不回滚会让界面保留一份
+     * 「看起来生效、重启即丢」的设置。
+     */
     fun save(articleId: Long, prefs: ReaderPrefs) {
         synchronized(lock) {
             val map = loadLocked()
+            val previous = map[articleId]
             map[articleId] = prefs
-            writeLocked(map)
+            if (!writeLocked(map)) {
+                if (previous == null) map.remove(articleId) else map[articleId] = previous
+            }
         }
     }
 
@@ -184,8 +208,8 @@ class ReaderPrefsStore internal constructor(private val file: File) {
         synchronized(lock) {
             val map = loadLocked()
             // 没有该文章的存档就不必整表重写（省一次落盘，也不把无谓的写失败暴露给用户）
-            if (map.remove(articleId) == null) return
-            writeLocked(map)
+            val removed = map.remove(articleId) ?: return
+            if (!writeLocked(map)) map[articleId] = removed
         }
     }
 

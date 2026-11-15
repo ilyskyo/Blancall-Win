@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.lerp
@@ -83,7 +84,9 @@ private fun buildLightScheme(accent: AccentPreset, useBeige: Boolean) = run {
         onTertiary = tertiary.readableOn(tertiary),
         tertiaryContainer = tertiaryContainer,
         onTertiaryContainer = darken(tertiaryContainer, 0.72f),
-        background = s.background,
+        // 纯白模式与 Android 的 flatBackground 一致：页面底与卡片同色，靠 1dp 描边分层；
+        // 米黄模式才让页面底比卡片深一档，读起来像纸张。
+        background = if (useBeige) s.background else s.surface,
         onBackground = OnBackgroundLight,
         surface = s.surface,
         onSurface = OnSurfaceLight,
@@ -124,7 +127,8 @@ private fun buildDarkScheme(accent: AccentPreset) = run {
         onTertiary = tertiary.readableOn(tertiary),
         tertiaryContainer = darken(tertiary, 0.55f),
         onTertiaryContainer = Color.White.copy(alpha = 0.80f).compositeOver(tertiary),
-        background = BackgroundDark,
+        // 与 Android 的 flatBackground 默认一致：深色也用抬升一档的 #1C1C1E，而不是纯黑
+        background = SurfaceDark,
         onBackground = OnBackgroundDark,
         surface = SurfaceDark,
         onSurface = OnSurfaceDark,
@@ -153,15 +157,17 @@ private fun buildDarkScheme(accent: AccentPreset) = run {
 /**
  * Windows 主题：与 Android 版同一套角色与色值。
  *
- * @param backgroundStyle sepia = 米黄纸张；plain = 纯白；gray 兼容旧设置按纯白处理
+ * @param backgroundStyle sepia = 米黄纸张；plain = 纯白（默认，与 Android 一致）；gray 兼容旧设置按纯白处理
  * @param accentIndex AppPrefs.accentIndex（0..5）
+ * @param uiFont 界面字体：serif（默认，系统衬线）/ sans（系统黑体）/ xwwk（霞鹜文楷）
  */
 @Composable
 fun BlancallTheme(
     themeMode: String,
     systemDark: Boolean,
-    backgroundStyle: String = "sepia",
+    backgroundStyle: String = "plain",
     accentIndex: Int = 0,
+    uiFont: String = UI_FONT_SANS,
     content: @Composable () -> Unit,
 ) {
     val dark = when (themeMode) {
@@ -186,13 +192,15 @@ fun BlancallTheme(
         outlineVariant = animateColorAsState(target.outlineVariant, spec, label = "outlineVariant").value,
     )
 
+    val typography = remember(uiFont) { uiTypography(uiFont) }
+
     CompositionLocalProvider(
         LocalIsDark provides dark,
         LocalAccent provides accent.primaryLight,
     ) {
         MaterialTheme(
             colorScheme = scheme,
-            typography = BlancallTypography,
+            typography = typography,
             shapes = BlancallShapes,
             content = content,
         )

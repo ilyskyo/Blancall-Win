@@ -170,11 +170,15 @@ class TagStore private constructor(private val file: File) {
 
     // ── 写入 ──
 
-    /** 原子落盘（持有 lock 时调用；[loadFailed] 时拒绝写，防覆盖已有数据） */
-    private fun writeLocked(d: TagData) {
+    /**
+     * 原子落盘（持有 lock 时调用；[loadFailed] 时拒绝写，防覆盖已有数据）。
+     *
+     * @return false = 未落盘；[mutate] 会撤回内存发布，避免「界面有了、重启没了」。
+     */
+    private fun writeLocked(d: TagData): Boolean {
         if (loadFailed) {
             Log.e("TagStore", "标签库读取失败，已阻止写盘以免覆盖已有标签：${file.absolutePath}")
-            return
+            return false
         }
         try {
             val root = JSONObject().put("version", CURRENT_VERSION)
@@ -200,17 +204,25 @@ class TagStore private constructor(private val file: File) {
             root.put("links", linksObj)
             // 原子写 + fsync + .bak 轮换统一到 AtomicFiles（快照已在锁内，符合落盘规范）
             AtomicFiles.writeTextAtomic(file, root.toString())
+            return true
         } catch (e: Exception) {
             Log.e("TagStore", "写盘失败", e)
+            return false
         }
     }
 
-    /** 突变模板：锁内 重读 → 变换 → 发布（UI 即时）→ 落盘 */
+    /**
+     * 突变模板：锁内 重读 → 变换 → 落盘 → 发布。
+     *
+     * 先落盘再发布：旧顺序先 `_data.value = newData`，写失败时标签已经出现在界面上，
+     * 重启后又消失。笔记/标签这类用户手工组织的数据不能有这种「假保存」。
+     */
     private inline fun <T> mutate(block: (TagData, Long) -> Pair<TagData, T>): T = synchronized(lock) {
         val current = readDataLocked()
         val (newData, result) = block(current, nextIdOf(current))
-        _data.value = newData
-        writeLocked(newData)
+        val changed = newData != current
+        val saved = !changed || writeLocked(newData)
+        _data.value = if (saved) newData else current
         result
     }
 

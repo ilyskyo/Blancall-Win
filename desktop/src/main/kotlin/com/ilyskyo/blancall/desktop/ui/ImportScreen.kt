@@ -1,4 +1,4 @@
-﻿package com.ilyskyo.blancall.desktop.ui
+package com.ilyskyo.blancall.desktop.ui
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
@@ -71,22 +71,28 @@ fun ImportScreen(state: AppState) {
             ?: "未命名"
     }
 
+    val scrollState = rememberScrollState()
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(32.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        Modifier
+            .fillMaxSize()
+            .touchScrollable(scrollState, scope)
+            .verticalScroll(scrollState)
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        BlancallTopBar(
+            title = "导入文章",
+            subtitle = "粘贴文本，或选择 TXT / PDF / Word / EPUB 文件",
+            onBack = { state.back() },
+        )
         Row(
             Modifier.fillMaxWidth().widthIn(max = 1000.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            IconButton(onClick = { state.back() }) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "返回")
-            }
-            Text("导入文章", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
-            OutlinedButton(
+            GlassButton(
                 enabled = !busy,
                 onClick = {
                     val text = runCatching {
@@ -106,7 +112,7 @@ fun ImportScreen(state: AppState) {
                     }
                 },
             ) { Text("从剪贴板导入") }
-            OutlinedButton(
+            GlassButton(
                 enabled = !busy,
                 onClick = {
                     val file = FileDialogs.open(
@@ -116,7 +122,7 @@ fun ImportScreen(state: AppState) {
                     if (file != null) {
                         if (file.extension.lowercase() in IMAGE_EXTENSIONS) {
                             state.showToast("图片不能直接导入；请先用 OCR/文字版整理成文本")
-                            return@OutlinedButton
+                            return@GlassButton
                         }
                         if (file.extension.equals("pdf", ignoreCase = true)) {
                             scope.launch {
@@ -135,7 +141,7 @@ fun ImportScreen(state: AppState) {
                                     busy = false
                                 }
                             }
-                            return@OutlinedButton
+                            return@GlassButton
                         }
                         scope.launch {
                             busy = true
@@ -197,8 +203,11 @@ fun ImportScreen(state: AppState) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { state.back() }) { Text("取消") }
-                    Button(
+                    GlassButton(onClick = { state.back() }) {
+                        Text("取消", style = MaterialTheme.typography.labelMedium)
+                    }
+                    PrimaryPill(
+                        if (busy) "处理中…" else "保存并阅读",
                         enabled = content.isNotBlank() && !busy,
                         onClick = {
                             scope.launch {
@@ -214,13 +223,13 @@ fun ImportScreen(state: AppState) {
                                     state.showToast(Strings.f("已导入《{0}》", article.title))
                                     state.navigate(Screen.Reader(id))
                                 } catch (e: Exception) {
-                                    state.showToast(Strings.f("保存失败：{0}", e.message))
+                                    state.reportStorageError("保存文章", e)
                                 } finally {
                                     busy = false
                                 }
                             }
                         },
-                    ) { Text("保存并阅读") }
+                    )
                 }
             }
             Text(

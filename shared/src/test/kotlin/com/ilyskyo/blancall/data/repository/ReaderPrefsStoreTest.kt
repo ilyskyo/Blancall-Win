@@ -124,6 +124,25 @@ class ReaderPrefsStoreTest {
      * 那次阅读设置静默不落盘。加锁后并发写必须一条不丢。
      */
     @Test
+    fun `阅读进度按文章往返持久化`() {
+        val file = File(Files.createTempDirectory("blancall-reader-prefs-progress").toFile(), "reader_prefs.json")
+        ReaderPrefsStore(file).save(41, prefs(customId = 1).copy(progress = 0.42f))
+        // 新实例只读盘：进度必须真的落进了 JSON，而不是只在内存
+        val reopened = ReaderPrefsStore(file)
+        assertEquals(0.42f, reopened.get(41)!!.progress, 0.001f)
+    }
+
+    @Test
+    fun `写盘失败时回滚内存中的阅读设置`() {
+        val temp = Files.createTempDirectory("blancall-reader-prefs-rollback").toFile()
+        // 父路径是文件 → AtomicFiles.ensureDirectory 必然失败
+        val blocker = File(temp, "blocked").apply { writeText("x") }
+        val store = ReaderPrefsStore(File(blocker, "reader_prefs.json"))
+        store.save(51, prefs(customId = 9))
+        assertNull("写盘失败后不能留下「界面已改、重启消失」的假设置", store.get(51))
+    }
+
+    @Test
     fun `并发保存一条不丢`() {
         val store = newStore()
         val threads = 6

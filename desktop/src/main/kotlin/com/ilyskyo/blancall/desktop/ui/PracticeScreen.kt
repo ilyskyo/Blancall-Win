@@ -1,9 +1,13 @@
 ﻿package com.ilyskyo.blancall.desktop.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -12,6 +16,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.Button
@@ -21,6 +28,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -58,6 +66,7 @@ import com.ilyskyo.blancall.desktop.app.AppState
 import com.ilyskyo.blancall.desktop.app.Screen
 import com.ilyskyo.blancall.desktop.app.Strings
 import com.ilyskyo.blancall.desktop.platform.PracticeSessionStore
+import com.ilyskyo.blancall.desktop.platform.TaskbarProgress
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -69,10 +78,18 @@ private enum class PracticeModeUi(val label: String, val wire: String) {
 }
 
 @Composable
-fun PracticeScreen(state: AppState, articleId: Long) {
+fun PracticeScreen(
+    state: AppState,
+    articleId: Long,
+    initialCustomConfigId: Long? = null,
+) {
     val articles by state.articles.allArticles.collectAsState(initial = emptyList())
     val article = articles.firstOrNull { it.id == articleId }
-    var mode by remember { mutableStateOf(PracticeModeUi.SENTENCE) }
+    var mode by remember(initialCustomConfigId) {
+        mutableStateOf(
+            if (initialCustomConfigId != null) PracticeModeUi.CUSTOM else PracticeModeUi.SENTENCE,
+        )
+    }
 
     if (article == null) {
         Column(
@@ -86,46 +103,42 @@ fun PracticeScreen(state: AppState, articleId: Long) {
         return
     }
 
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            IconButton(onClick = { state.back() }) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "返回")
-            }
-            Column(Modifier.weight(1f)) {
-                Text(
-                    Strings.f("练习 · {0}", article.title.ifBlank { Strings.t("未命名") }),
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    "键盘优先：填完提交，结果会写入练习记录与 FSRS 排期。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            PracticeModeUi.entries.forEach { item ->
-                if (mode == item) {
-                    Button(onClick = { mode = item }) { Text(item.label) }
-                } else {
-                    TextButton(onClick = { mode = item }) { Text(item.label) }
+    DisposableEffect(article.id) {
+        TaskbarProgress.indeterminate()
+        onDispose { TaskbarProgress.clear() }
+    }
+
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+    Column(Modifier.fillMaxHeight().widthIn(max = PracticeMaxWidth).fillMaxWidth()) {
+        BlancallTopBar(
+            title = Strings.f("练习 · {0}", article.title.ifBlank { Strings.t("未命名") }),
+            subtitle = "填完提交，结果会写入练习记录与 FSRS 排期",
+            onBack = { state.back() },
+            actions = {
+                GlassButton(onClick = { state.navigate(Screen.Reader(article.id)) }) {
+                    Text("返回阅读", style = MaterialTheme.typography.labelMedium)
                 }
-            }
-            Spacer(Modifier.width(8.dp))
-            TextButton(onClick = { state.navigate(Screen.Reader(article.id)) }) { Text("返回阅读") }
+            },
+        )
+        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+            SegmentedPills(
+                options = PracticeModeUi.entries.map { it to it.label },
+                selected = mode,
+                onSelect = { mode = it },
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
+        Spacer(Modifier.height(8.dp))
 
         key(mode) {
             when (mode) {
                 PracticeModeUi.SENTENCE -> SentencePractice(state, article)
                 PracticeModeUi.WORD -> WordPractice(state, article)
                 PracticeModeUi.DICTATION -> DictationPractice(state, article)
-                PracticeModeUi.CUSTOM -> CustomPractice(state, article)
+                PracticeModeUi.CUSTOM -> CustomPractice(state, article, initialCustomConfigId)
             }
         }
+    }
     }
 }
 
@@ -298,134 +311,184 @@ private fun SentencePractice(
         }
     }
 
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(28.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        item {
-            SectionCard(
-                modifier = Modifier.widthIn(max = 1000.dp),
-                title = if (customConfig == null) "句子挖空"
-                else Strings.f("自定义挖空 · {0}", customConfig.name),
-                subtitle = Strings.f(
-                    "共 {0} 空 · 已填 {1}",
-                    blanks.size,
-                    blanks.count { answers[it.index].orEmpty().isNotBlank() },
-                ),
-                trailing = if (onExitCustom == null) null else {
-                    { TextButton(onClick = onExitCustom) { Text("换配置") } }
+    val sentenceListState = rememberLazyListState()
+    val leftScroll = rememberScrollState()
+    val scrollScope = rememberCoroutineScope()
+
+    // 卡片内容抽成局部组合 lambda：宽屏双栏与窄屏单列复用同一份，
+    // 避免两套布局各写一遍导致行为分叉。
+    val textCard: @Composable () -> Unit = {
+        SectionCard(
+            modifier = Modifier.fillMaxWidth(),
+            title = if (customConfig == null) "句子挖空"
+            else Strings.f("自定义挖空 · {0}", customConfig.name),
+            subtitle = Strings.f(
+                "共 {0} 空 · 已填 {1}",
+                blanks.size,
+                blanks.count { answers[it.index].orEmpty().isNotBlank() },
+            ),
+            trailing = if (onExitCustom == null) null else {
+                { TextButton(onClick = onExitCustom) { Text("换配置") } }
+            },
+        ) {
+            Text(
+                cloze.displayText,
+                fontSize = state.prefs.readerFontPx.sp,
+                lineHeight = (state.prefs.readerFontPx * state.prefs.readerLineHeight).sp,
+            )
+        }
+    }
+
+    val answerCard: @Composable (Int) -> Unit = { i ->
+        val blank = blanks[i]
+        val detail = details?.getOrNull(i)
+        SectionCard(
+            modifier = Modifier.fillMaxWidth(),
+            title = Strings.f("第 {0} 空 · 第 {1} 句", i + 1, blank.sentenceIndex + 1),
+            subtitle = when {
+                detail == null ->
+                    if (state.prefs.hintsEnabled) {
+                        val auto = autoReveal[blank.index] ?: 0
+                        if (auto > 0) {
+                            Strings.f(
+                                "弱提示：{0} 字 · 已淡显 {1} 字",
+                                blank.originalText.length,
+                                auto,
+                            )
+                        } else {
+                            Strings.f("弱提示：{0} 字", blank.originalText.length)
+                        }
+                    } else null
+                detail.result == AnswerChecker.Result.CORRECT -> "正确"
+                else -> Strings.f("错误：{0}", detail.result.name)
+            },
+        ) {
+            OutlinedTextField(
+                value = answers[blank.index].orEmpty(),
+                onValueChange = { setAnswer(blank.index, it) },
+                modifier = Modifier.fillMaxWidth().onKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                    when {
+                        event.isCtrlPressed && event.key == Key.Z -> {
+                            undoAnswer(); true
+                        }
+                        event.isCtrlPressed && event.key == Key.Y -> {
+                            redoAnswer(); true
+                        }
+                        event.key == Key.Enter || event.key == Key.NumPadEnter -> {
+                            submit(); true
+                        }
+                        else -> false
+                    }
                 },
-            ) {
+                enabled = !submitted,
+                singleLine = true,
+                label = { Text("填写被挖掉的内容") },
+            )
+            val autoShown = autoReveal[blank.index] ?: 0
+            if (autoShown > 0 && !submitted && answers[blank.index].orEmpty().isBlank()) {
                 Text(
-                    cloze.displayText,
-                    fontSize = state.prefs.readerFontPx.sp,
-                    lineHeight = (state.prefs.readerFontPx * state.prefs.readerLineHeight).sp,
+                    Strings.f("自动淡显：{0}…", blank.originalText.take(autoShown)),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        }
-        itemsIndexed(blanks) { i, blank ->
-            val detail = details?.getOrNull(i)
-            SectionCard(
-                modifier = Modifier.widthIn(max = 1000.dp),
-                title = Strings.f("第 {0} 空 · 第 {1} 句", i + 1, blank.sentenceIndex + 1),
-                subtitle = when {
-                    detail == null ->
-                        if (state.prefs.hintsEnabled) {
-                            val auto = autoReveal[blank.index] ?: 0
-                            if (auto > 0) {
-                                Strings.f(
-                                    "弱提示：{0} 字 · 已淡显 {1} 字",
-                                    blank.originalText.length,
-                                    auto,
-                                )
-                            } else {
-                                Strings.f("弱提示：{0} 字", blank.originalText.length)
-                            }
-                        } else null
-                    detail.result == AnswerChecker.Result.CORRECT -> "正确"
-                    else -> Strings.f("错误：{0}", detail.result.name)
-                },
-            ) {
-                OutlinedTextField(
-                    value = answers[blank.index].orEmpty(),
-                    onValueChange = { setAnswer(blank.index, it) },
-                    modifier = Modifier.fillMaxWidth().onKeyEvent { event ->
-                        if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
-                        when {
-                            event.isCtrlPressed && event.key == Key.Z -> {
-                                undoAnswer(); true
-                            }
-                            event.isCtrlPressed && event.key == Key.Y -> {
-                                redoAnswer(); true
-                            }
-                            event.key == Key.Enter || event.key == Key.NumPadEnter -> {
-                                submit(); true
-                            }
-                            else -> false
+            if (!submitted && state.prefs.hintsEnabled) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        if (revealed[blank.index] != true) {
+                            revealed[blank.index] = true
+                            strongUsed++
                         }
-                    },
-                    enabled = !submitted,
-                    singleLine = true,
-                    label = { Text("填写被挖掉的内容") },
-                )
-                val autoShown = autoReveal[blank.index] ?: 0
-                if (autoShown > 0 && !submitted && answers[blank.index].orEmpty().isBlank()) {
-                    Text(
-                        Strings.f("自动淡显：{0}…", blank.originalText.take(autoShown)),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (!submitted && state.prefs.hintsEnabled) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = {
-                            if (revealed[blank.index] != true) {
-                                revealed[blank.index] = true
-                                strongUsed++
-                            }
-                        }) { Text("强提示：显示首字") }
-                        if (revealed[blank.index] == true) {
-                            Text(
-                                Strings.f("首字：{0}", blank.originalText.firstOrNull() ?: ""),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                        if (state.handwriting.hasChineseModel) {
-                            TextButton(onClick = { handwritingFor = blank.index }) { Text("手写") }
-                        }
+                    }) { Text("强提示：显示首字") }
+                    if (revealed[blank.index] == true) {
+                        Text(
+                            Strings.f("首字：{0}", blank.originalText.firstOrNull() ?: ""),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    if (state.handwriting.hasChineseModel) {
+                        TextButton(onClick = { handwritingFor = blank.index }) { Text("手写") }
                     }
                 }
-                if (detail != null) {
-                    Text(
-                        Strings.f("正确答案：{0}", blank.originalText),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
+            }
+            if (detail != null) {
+                Text(
+                    Strings.f("正确答案：{0}", blank.originalText),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
         }
-        item {
-            Row(Modifier.widthIn(max = 1000.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(enabled = !submitted && !saving, onClick = { submit() }) {
-                    Text(if (saving) "保存中…" else "提交答案")
-                }
-                if (submitted) {
-                    Button(onClick = { state.navigate(Screen.Practice(article.id)) }) { Text("再练一次") }
-                    TextButton(onClick = { state.navigate(Screen.Statistics(article.id)) }) { Text("查看统计") }
-                }
+    }
+
+    val submitRow: @Composable () -> Unit = {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(enabled = !submitted && !saving, onClick = { submit() }) {
+                Text(if (saving) "保存中…" else "提交答案")
+            }
+            if (submitted) {
+                Button(onClick = { state.navigate(Screen.Practice(article.id)) }) { Text("再练一次") }
+                TextButton(onClick = { state.navigate(Screen.Statistics(article.id)) }) { Text("查看统计") }
             }
         }
-        if (resultText != null) {
-            item {
-                SectionCard(modifier = Modifier.widthIn(max = 1000.dp), title = "本次结果") {
-                    Text(resultText!!, style = MaterialTheme.typography.titleMedium)
+    }
+
+    val resultCard: @Composable () -> Unit = {
+        SectionCard(modifier = Modifier.fillMaxWidth(), title = "本次结果") {
+            Text(resultText!!, style = MaterialTheme.typography.titleMedium)
+        }
+    }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        // 与 Android 同一双栏判据：内容宽 ≥720dp 且高 ≥480dp；
+        // 手机横屏常只满足宽度，仍保持单列，否则作答区会被挤出可视区。
+        val wide = twoPaneFits(maxWidth.value, maxHeight.value) && !submitted
+        if (wide) {
+            Row(
+                Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Column(
+                    Modifier.weight(1f).fillMaxHeight().verticalScroll(leftScroll),
+                ) {
+                    textCard()
+                }
+                Box(
+                    Modifier
+                        .width(1.dp)
+                        .fillMaxHeight()
+                        .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                )
+                LazyColumn(
+                    Modifier.weight(1f).fillMaxHeight().touchScrollable(sentenceListState, scrollScope),
+                    state = sentenceListState,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    itemsIndexed(blanks) { i, _ -> answerCard(i) }
+                    item { submitRow() }
+                    if (resultText != null) item { resultCard() }
                 }
             }
+        } else {
+            LazyColumn(
+                Modifier.fillMaxSize().touchScrollable(sentenceListState, scrollScope),
+                state = sentenceListState,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(28.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                item { textCard() }
+                itemsIndexed(blanks) { i, _ -> answerCard(i) }
+                item { submitRow() }
+                if (resultText != null) {
+                    item { resultCard() }
+                }
+                item { Spacer(Modifier.height(24.dp)) }
+            }
         }
-        item { Spacer(Modifier.height(24.dp)) }
     }
 
     val handwritingIndex = handwritingFor
@@ -450,11 +513,19 @@ private fun SentencePractice(
 }
 
 @Composable
-private fun CustomPractice(state: AppState, article: Article) {
+private fun CustomPractice(
+    state: AppState,
+    article: Article,
+    initialConfigId: Long? = null,
+) {
     val configs = remember(article.id) {
         runCatching { state.customCloze.getConfigs(article.id) }.getOrDefault(emptyList())
     }
-    var active by remember(article.id) { mutableStateOf<CustomClozeStore.CustomConfig?>(null) }
+    var active by remember(article.id, initialConfigId) {
+        mutableStateOf(
+            initialConfigId?.let { id -> configs.firstOrNull { it.id == id } },
+        )
+    }
     val current = active
     if (current != null) {
         SentencePractice(
@@ -466,8 +537,10 @@ private fun CustomPractice(state: AppState, article: Article) {
         return
     }
 
+    val customListState = rememberLazyListState()
     LazyColumn(
-        Modifier.fillMaxSize(),
+        Modifier.fillMaxSize().touchScrollable(customListState, rememberCoroutineScope()),
+        state = customListState,
         contentPadding = androidx.compose.foundation.layout.PaddingValues(28.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -631,8 +704,10 @@ private fun WordPractice(state: AppState, article: Article) {
         }
     }
 
+    val wordListState = rememberLazyListState()
     LazyColumn(
-        Modifier.fillMaxSize(),
+        Modifier.fillMaxSize().touchScrollable(wordListState, rememberCoroutineScope()),
+        state = wordListState,
         contentPadding = androidx.compose.foundation.layout.PaddingValues(28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -848,8 +923,13 @@ private fun DictationPractice(state: AppState, article: Article) {
         }
     }
 
+    val dictScroll = rememberScrollState()
     Column(
-        Modifier.fillMaxSize().padding(28.dp),
+        Modifier
+            .fillMaxSize()
+            .touchScrollable(dictScroll, rememberCoroutineScope())
+            .verticalScroll(dictScroll)
+            .padding(28.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

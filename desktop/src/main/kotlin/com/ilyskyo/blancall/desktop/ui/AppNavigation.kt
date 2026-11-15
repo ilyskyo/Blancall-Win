@@ -29,7 +29,6 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -38,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -45,6 +45,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,10 +62,10 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
-/** 根 tab 定义（与 Android 一致：首页 / 文章 / 数据 / 素材库）。 */
+/** 根 tab 定义（与 Android 一致：首页 / 我的文章 / 数据 / 素材库）。 */
 enum class RootTab(val label: String, val icon: ImageVector) {
     HOME("首页", Icons.Outlined.Home),
-    ARTICLES("文章", Icons.AutoMirrored.Outlined.Article),
+    ARTICLES("我的文章", Icons.AutoMirrored.Outlined.Article),
     STATS("数据", Icons.Outlined.Insights),
     LIBRARY("素材库", Icons.Outlined.AutoStories),
 }
@@ -74,6 +78,7 @@ private val BarBottomMargin = 14.dp
 private val IndicatorInset = 4.dp
 
 /** Android 同款悬浮液态玻璃底栏（桌面用半透明玻璃兜底）。 */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun BlancallBottomBar(
     currentTab: Int,
@@ -92,6 +97,7 @@ fun BlancallBottomBar(
 
     val position = remember { Animatable(selectedIndex.toFloat()) }
     val scope = rememberCoroutineScope()
+    var hoverIndex by remember { mutableStateOf(-1) }
     LaunchedEffect(selectedIndex, count) {
         position.animateTo(selectedIndex.toFloat(), spring(dampingRatio = 0.82f, stiffness = 520f))
     }
@@ -138,10 +144,16 @@ fun BlancallBottomBar(
             Row(Modifier.fillMaxSize().zIndex(2f)) {
                 tabs.forEachIndexed { index, tab ->
                     val selected = index == selectedIndex
+                    val hovered = hoverIndex == index && !selected
                     Column(
                         Modifier
                             .width(tabW)
-                            .fillMaxHeight(),
+                            .fillMaxHeight()
+                            .clip(SmoothRoundedCornerShape(18.dp))
+                            .background(
+                                if (hovered) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f) else Color.Transparent
+                            )
+                            .pointerHoverIcon(PointerIcon.Hand),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
@@ -169,6 +181,12 @@ fun BlancallBottomBar(
                 Modifier
                     .fillMaxSize()
                     .zIndex(3f)
+                    .pointerHoverIcon(PointerIcon.Hand)
+                    .onPointerEvent(PointerEventType.Move) { event ->
+                        val x = event.changes.firstOrNull()?.position?.x ?: return@onPointerEvent
+                        hoverIndex = (x / tabW.toPx()).toInt().coerceIn(0, count - 1)
+                    }
+                    .onPointerEvent(PointerEventType.Exit) { hoverIndex = -1 }
                     .pointerInput(count, tabW) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -239,6 +257,7 @@ private val RailIndicatorWidth = 48.dp
 private val RailIndicatorHeight = 32.dp
 
 /** Android 同款大屏侧栏坞：按内容高度收缩、贴内容区顶部，选中项只包图标。 */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun BlancallRail(
     currentTab: Int,
@@ -258,6 +277,7 @@ fun BlancallRail(
 
     val position = remember { Animatable(selectedIndex.toFloat()) }
     val scope = rememberCoroutineScope()
+    var hoverIndex by remember { mutableStateOf(-1) }
     LaunchedEffect(selectedIndex, count) {
         position.animateTo(selectedIndex.toFloat(), spring(dampingRatio = 0.82f, stiffness = 520f))
     }
@@ -305,8 +325,17 @@ fun BlancallRail(
             ) {
                 tabs.forEachIndexed { index, tab ->
                     val selected = index == selectedIndex
+                    val hovered = hoverIndex == index && !selected
                     Column(
-                        Modifier.height(RailItemHeight).fillMaxWidth(),
+                        Modifier
+                            .height(RailItemHeight)
+                            .fillMaxWidth()
+                            .padding(horizontal = 2.dp)
+                            .clip(SmoothRoundedCornerShape(12.dp))
+                            .background(
+                                if (hovered) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f) else Color.Transparent
+                            )
+                            .pointerHoverIcon(PointerIcon.Hand),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
@@ -332,6 +361,13 @@ fun BlancallRail(
                 Modifier
                     .fillMaxSize()
                     .zIndex(3f)
+                    .pointerHoverIcon(PointerIcon.Hand)
+                    .onPointerEvent(PointerEventType.Move) { event ->
+                        val y = event.changes.firstOrNull()?.position?.y ?: return@onPointerEvent
+                        hoverIndex = (((y - RailInsetV.toPx()) / RailItemHeight.toPx()).toInt())
+                            .coerceIn(0, count - 1)
+                    }
+                    .onPointerEvent(PointerEventType.Exit) { hoverIndex = -1 }
                     .pointerInput(count) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)

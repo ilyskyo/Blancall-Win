@@ -1,17 +1,19 @@
-﻿# Blancall Windows 打包脚本
+# Blancall Windows 打包脚本
 # 用法：powershell -ExecutionPolicy Bypass -File tools/package-windows.ps1
 # 前置：JDK 21。默认使用 .tools 下的 Temurin（含 jlink/java）；也可传 -JdkHome。
 #
 # 产物：
-#   dist\Blancall-7.6.1-win-x64-portable.zip   便携版（解压后双击 Blancall.vbs / Blancall.bat）
+#   dist\Blancall-7.6.1-win-x64-setup.exe      EXE 安装包（主发布产物）
+#   dist\Blancall-7.6.1-win-x64-portable.zip   免安装包（解压后双击 Blancall.exe）
 #
-# 说明：jpackage 在受限令牌/沙箱环境下会因 Files.isWritable 误判而失败；
-# 本脚本改用 uberJar + jlink + 自行组装 app image 的等价路径，
-# 并在脚本末尾尝试 jpackage MSI（可用时才产出）。
+# 说明：安装包是自绘单文件向导（不经过系统 Temp，也不在安装时生成卸载器）；
+# Blancall.exe 启动器与 BlancallUninstall.exe 卸载器由系统自带的 csc 编译。
 
 param(
     [string]$JdkHome = "",
     [switch]$SkipTests,
+    # MSI 需要 jpackage + WiX 3.14；受限令牌环境下 light.exe 可能失败，跳过不影响 EXE 安装包
+    [switch]$SkipMsi,
     # 可选：指向包含 hccr/ 的目录（例如从 Release 下载的手写包解压后）。
     # 中文模型不随仓库分发；不传此参数时打出的包不含中文手写模型。
     [string]$ModelDir = ""
@@ -57,7 +59,7 @@ Copy-Item (Join-Path $JdkHome "bin\java.exe") (Join-Path $image "runtime\bin") -
 Copy-Item (Join-Path $JdkHome "bin\javaw.exe") (Join-Path $image "runtime\bin") -Force
 
 Copy-Item "desktop\build\libs\blancall-win.jar" (Join-Path $image "app\blancall-win.jar") -Force
-Copy-Item "README.md", "PRIVACY.md" $image -Force
+Copy-Item "README.md", "PRIVACY.md", "LICENSE" $image -Force
 if (Test-Path "THIRD-PARTY-LICENSES.md") { Copy-Item "THIRD-PARTY-LICENSES.md" $image -Force }
 $icon = "desktop\src\main\resources\icon\blancall.ico"
 if (Test-Path $icon) { Copy-Item $icon (Join-Path $image "Blancall.ico") -Force }
@@ -74,94 +76,97 @@ if ($ModelDir) {
     Write-Host "已注入中文手写模型：$srcModel"
 }
 $withHccr = Test-Path (Join-Path $image "models\hccr\model.ncnn.param")
-Write-Host ("便携包将包含中文手写模型：{0}" -f $withHccr)
+Write-Host ("安装包将包含中文手写模型：{0}" -f $withHccr)
 
-$launcher = @'
-@echo off
-setlocal
-set DIR=%~dp0
-cd /d "%DIR%"
-start "" "%DIR%runtime\bin\javaw.exe" -Dcompose.application.configure.swing.globals=true -jar "%DIR%app\blancall-win.jar"
-endlocal
-'@
-Set-Content -Path (Join-Path $image "Blancall.bat") -Value $launcher -Encoding OEM
-
-$vbs = @'
-Set shell = CreateObject("WScript.Shell")
-Set fso = CreateObject("Scripting.FileSystemObject")
-dir = fso.GetParentFolderName(WScript.ScriptFullName)
-shell.CurrentDirectory = dir
-shell.Run """" & dir & "\runtime\bin\javaw.exe"" -Dcompose.application.configure.swing.globals=true -jar """ & dir & "\app\blancall-win.jar""", 0, False
-'@
-Set-Content -Path (Join-Path $image "Blancall.vbs") -Value $vbs -Encoding ASCII
+# 原生启动器：双击进入应用，不经过脚本宿主，也不会闪控制台窗口
+$csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+if (-not (Test-Path $csc)) { throw "找不到 .NET Framework 4 编译器：$csc" }
+& $csc /nologo /target:winexe /platform:anycpu /codepage:65001 /optimize+ `
+    "/win32icon:desktop\src\main\resources\icon\blancall.ico" `
+    "/r:System.Windows.Forms.dll" `
+    "/out:$image\Blancall.exe" "tools\launcher\BlancallLauncher.cs"
+if ($LASTEXITCODE -ne 0) { throw "启动器编译失败" }
 
 New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+Get-ChildItem "dist" -File -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.Name -like "Blancall-*-setup.exe" -or
+        $_.Name -like "Blancall-*-portable*.zip" -or
+        $_.Name -like "Blancall-*-win-x64.zip" -or
+        $_.Extension -eq ".msi"
+    } |
+    Remove-Item -Force
+
+# EXE 安装包（自绘单文件向导；不经过系统 Temp，也不在安装时生成 unins000.exe）
+$uninstaller = Join-Path $root ".tools\installer\BlancallUninstall.exe"
+New-Item -ItemType Directory -Force -Path (Split-Path $uninstaller) | Out-Null
+& $csc /nologo /target:winexe /platform:anycpu /codepage:65001 /optimize+ `
+    "/win32icon:desktop\src\main\resources\icon\blancall.ico" `
+    "/win32manifest:tools\installer\app.manifest" `
+    "/r:System.Windows.Forms.dll" "/r:System.Drawing.dll" `
+    "/out:$uninstaller" "tools\installer\InstallerStrings.cs" "tools\installer\BlancallUninstall.cs"
+if ($LASTEXITCODE -ne 0) { throw "卸载器编译失败" }
+Copy-Item $uninstaller (Join-Path $image "BlancallUninstall.exe") -Force
+
+# 安装负载：app image 压成 zip，安装器直接解到安装目录，不经过系统 Temp
+$payload = Join-Path $root ".tools\installer\payload.zip"
+if (Test-Path $payload) { Remove-Item $payload -Force }
+Compress-Archive -Path (Join-Path $image "*") -DestinationPath $payload -CompressionLevel Optimal
+
+# 自绘安装向导：欢迎（MIT 信息页）→ 目录/快捷方式 → 进度 → 完成
+& $csc /nologo /target:winexe /platform:anycpu /codepage:65001 /optimize+ `
+    "/win32icon:desktop\src\main\resources\icon\blancall.ico" `
+    "/win32manifest:tools\installer\app.manifest" `
+    "/r:System.Windows.Forms.dll" "/r:System.Drawing.dll" "/r:System.Core.dll" "/r:Microsoft.CSharp.dll" `
+    "/r:System.IO.Compression.dll" "/r:System.IO.Compression.FileSystem.dll" `
+    "/resource:$payload,payload.zip" "/resource:LICENSE,license.txt" `
+    "/out:dist\Blancall-7.6.1-win-x64-setup.exe" "tools\installer\InstallerStrings.cs" "tools\installer\DpiScale.cs" "tools\installer\BlancallInstaller.cs"
+if ($LASTEXITCODE -ne 0) { throw "安装向导编译失败" }
+Write-Host "安装包：dist\Blancall-7.6.1-win-x64-setup.exe"
+
+# MSI（ARCHITECTURE §14）：jpackage + WiX 3.14，per-user 安装。
+# 受限令牌环境下 light.exe 创建带 ACL 的临时目录会被拒绝；此时只警告，EXE 安装包仍可用。
+if (-not $SkipMsi) {
+    $jpackage = Join-Path $JdkHome "bin\jpackage.exe"
+    $wixBin = Join-Path $root ".tools\wix314"
+    if ((Test-Path $jpackage) -and (Test-Path (Join-Path $wixBin "light.exe"))) {
+        $env:PATH = "$wixBin;$env:PATH"
+        $msiOut = Join-Path $root ".tools\msi-out"
+        if (Test-Path $msiOut) { Remove-Item $msiOut -Recurse -Force }
+        New-Item -ItemType Directory -Force -Path $msiOut | Out-Null
+        $appContent = @(
+            (Join-Path $image "models"),
+            (Join-Path $image "README.md"),
+            (Join-Path $image "PRIVACY.md"),
+            (Join-Path $image "LICENSE"),
+            (Join-Path $image "THIRD-PARTY-LICENSES.md")
+        ) | Where-Object { Test-Path $_ }
+        & $jpackage --type msi --name Blancall --app-version 7.6.1 `
+            --vendor ilyskyo --description "Blancall - local-first cloze memorization" `
+            --icon "desktop\src\main\resources\icon\blancall.ico" `
+            --input (Join-Path $image "app") --main-jar "blancall-win.jar" `
+            --main-class "com.ilyskyo.blancall.desktop.MainKt" `
+            --runtime-image (Join-Path $image "runtime") `
+            --dest $msiOut --install-dir "Programs\Blancall" `
+            --win-per-user-install --win-menu --win-menu-group "Blancall" --win-shortcut --win-dir-chooser `
+            --win-upgrade-uuid "2f7f6c25-9a7b-4f53-8d0e-6a0a1e8a7c11" `
+            --app-content ($appContent -join ",") --temp (Join-Path $root ".tools\wix-temp-msi")
+        if ($LASTEXITCODE -eq 0) {
+            $msi = Get-ChildItem $msiOut -Filter *.msi | Select-Object -First 1
+            if ($msi) {
+                Copy-Item $msi.FullName "dist\Blancall-7.6.1-win-x64.msi" -Force
+                Write-Host "MSI：dist\Blancall-7.6.1-win-x64.msi"
+            }
+        } else {
+            Write-Warning "MSI 未生成（jpackage/WiX 失败）；EXE 安装包不受影响。"
+        }
+    } else {
+        Write-Warning "未找到 jpackage 或 WiX 3.14，跳过 MSI；EXE 安装包不受影响。"
+    }
+}
+
+# 免安装包：解压后双击 Blancall.exe，适合不想安装或装到移动硬盘的场景
 $zip = Join-Path $root "dist\Blancall-7.6.1-win-x64-portable.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path $image -DestinationPath $zip -CompressionLevel Optimal
-Write-Host "便携包：$zip"
-
-# 精简包（不含 models/，手写入口运行时自动隐藏）
-$liteDir = Join-Path $root ".tools\app-lite"
-if (Test-Path $liteDir) { Remove-Item $liteDir -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $liteDir | Out-Null
-Copy-Item $image (Join-Path $liteDir "Blancall") -Recurse -Force
-Remove-Item (Join-Path $liteDir "Blancall\models") -Recurse -Force -ErrorAction SilentlyContinue
-$liteZip = Join-Path $root "dist\Blancall-7.6.1-win-x64-portable-lite.zip"
-if (Test-Path $liteZip) { Remove-Item $liteZip -Force }
-Compress-Archive -Path (Join-Path $liteDir "Blancall") -DestinationPath $liteZip -CompressionLevel Optimal
-Write-Host "精简包：$liteZip"
-
-# EXE 安装包（Inno Setup 6；当前用户安装，卸载不删学习数据）
-$isccCandidates = @(
-    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-    "C:\Program Files\Inno Setup 6\ISCC.exe",
-    (Join-Path $root ".tools\innosetup\ISCC.exe")
-)
-$iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $iscc) {
-    $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-    if ($cmd) { $iscc = $cmd.Source }
-}
-if ($iscc) {
-    & $iscc "/DAppVersion=7.6.1" "/DSourceDir=$image" "/DOutputDir=$(Join-Path $root 'dist')" "tools\windows-installer.iss"
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "安装包：dist\Blancall-7.6.1-win-x64-setup.exe"
-    } else {
-        Write-Warning "Inno Setup 编译失败（退出码 $LASTEXITCODE），便携包已生成。"
-    }
-} else {
-    Write-Warning "未找到 Inno Setup 6（ISCC.exe），跳过 EXE 安装包；安装后重跑本脚本即可。"
-}
-
-# 可选：jpackage / MSI（受限令牌下通常不可用，失败不阻断便携包）
-$jpackage = Join-Path $JdkHome "bin\jpackage.exe"
-if (Test-Path $jpackage) {
-    # 优先使用仓库自带的 WiX 3.14（普通用户会话可直接出 MSI）
-    $wixDir = Join-Path $root ".tools\wix314"
-    if (Test-Path (Join-Path $wixDir "light.exe")) {
-        $env:PATH = "$wixDir;$env:PATH"
-    } elseif (Test-Path (Join-Path $wixDir "bin\light.exe")) {
-        $env:PATH = (Join-Path $wixDir "bin") + ";$env:PATH"
-    }
-    try {
-        $msiOut = Join-Path $root "dist\jpackage-msi"
-        New-Item -ItemType Directory -Force -Path $msiOut | Out-Null
-        # jpackage 要求 --temp 指向不存在或空的目录；每次先清空
-        $msiTemp = Join-Path $root "dist\jpackage-temp"
-        if (Test-Path $msiTemp) { Remove-Item $msiTemp -Recurse -Force -ErrorAction SilentlyContinue }
-        & $jpackage --type msi --name Blancall --input (Join-Path $image "app") `
-            --main-jar "blancall-win.jar" --main-class "com.ilyskyo.blancall.desktop.MainKt" `
-            --dest $msiOut --app-version 7.6.1 --vendor ilyskyo --temp $msiTemp 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            Get-ChildItem $msiOut -Filter *.msi | ForEach-Object {
-                Copy-Item $_.FullName "dist\" -Force
-                Write-Host "MSI：dist\$($_.Name)"
-            }
-        } else {
-            Write-Warning "jpackage MSI 不可用（受限令牌/临时目录特权），便携包已生成；可在普通用户会话重跑本脚本（会自动使用 .tools\wix314）。"
-        }
-    } catch {
-        Write-Warning "jpackage 失败：$($_.Exception.Message)；便携包已生成。"
-    }
-}
+Write-Host "免安装包：$zip"

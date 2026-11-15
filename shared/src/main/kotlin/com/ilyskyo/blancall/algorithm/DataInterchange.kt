@@ -150,6 +150,70 @@ object DataInterchange {
         return obj
     }
 
+    // ── CSV 导出 ──
+
+    /**
+     * 12 列 CSV（与 [parseCsv] 同一契约，可往返）。
+     *
+     * 表头随界面语言，但导入按列位解析；模式写枚举名、时间固定
+     * `yyyy-MM-dd HH:mm:ss`，否则换语言/换区域后旧文件再也导不回来。
+     *
+     * @return 带 UTF-8 BOM 的完整文本（Excel 打开中文不乱码）
+     */
+    fun buildCsv(
+        records: List<PracticeRecord>,
+        articleTitles: Map<Long, String>,
+        locale: Locale = Locale.getDefault(),
+    ): String {
+        val header = listOf(
+            "ID", "文章ID", "文章标题", "模式", "总空数", "正确数",
+            "正确率", "用时(秒)", "练习时间", "错误数", "错误明细", "mistakes_json",
+        )
+        val format = SimpleDateFormat(CSV_TIME_PATTERN, locale)
+        val sb = StringBuilder()
+        sb.append('\uFEFF')
+        sb.append(header.joinToString(",") { csvEscape(it) }).append("\r\n")
+        records.sortedBy { it.timestamp }.forEach { r ->
+            val accuracy = if (r.totalBlanks > 0) {
+                "${r.correctCount * 100 / r.totalBlanks}%"
+            } else "—"
+            val detail = r.mistakes.joinToString("; ") { m ->
+                buildString {
+                    append(m.errorType.ifBlank { "OTHER" })
+                    append(": ")
+                    append(m.correctAnswer)
+                    if (m.userAnswer.isNotBlank()) append(" ≠ ").append(m.userAnswer)
+                }
+            }
+            val row = listOf(
+                r.id.toString(),
+                r.articleId.toString(),
+                articleTitles[r.articleId].orEmpty(),
+                r.mode,
+                r.totalBlanks.toString(),
+                r.correctCount.toString(),
+                accuracy,
+                (r.duration / 1000L).toString(),
+                format.format(Date(r.timestamp)),
+                r.mistakes.size.toString(),
+                detail,
+                mistakesToCsvJson(r.mistakes),
+            )
+            sb.append(row.joinToString(",") { csvEscape(it) }).append("\r\n")
+        }
+        return sb.toString()
+    }
+
+    private fun csvEscape(field: String): String {
+        // 与 Android 导出器一致：= + - @ 开头会被表格软件当公式执行
+        val safe = if (field.isNotEmpty() && field[0] in "=+-@\t\r") "'$field" else field
+        return if (safe.contains(',') || safe.contains('"') || safe.contains('\n') || safe.contains('\r')) {
+            "\"" + safe.replace("\"", "\"\"") + "\""
+        } else {
+            safe
+        }
+    }
+
     // ── CSV 导入 ──
 
     private const val CSV_TIME_PATTERN = "yyyy-MM-dd HH:mm:ss"

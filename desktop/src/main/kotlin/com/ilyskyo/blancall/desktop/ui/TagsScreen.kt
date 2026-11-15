@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -67,28 +68,21 @@ fun TagsScreen(state: AppState) {
         withContext(Dispatchers.IO) { state.tags.snapshot() }
     }
 
+    val tagsScroll = rememberScrollState()
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(32.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        Modifier
+            .fillMaxSize()
+            .touchScrollable(tagsScroll, scope)
+            .verticalScroll(tagsScroll)
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Row(
-            Modifier.fillMaxWidth().widthIn(max = 1000.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            IconButton(onClick = { state.back() }) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "返回")
-            }
-            Column(Modifier.weight(1f)) {
-                Text("文章标签", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    "标签用于筛选文章与组织复习；绑定关系与 Android 的 tags.json 完全一致。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+        BlancallTopBar(
+            title = "文章标签",
+            subtitle = "标签用于筛选文章与组织复习；与 Android 的 tags.json 完全一致",
+            onBack = { state.back() },
+        )
 
         SectionCard(modifier = Modifier.widthIn(max = 1000.dp), title = "新建标签") {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -245,31 +239,34 @@ fun TagHomeScreen(state: AppState, tagId: Long) {
         return
     }
 
+    val tagListState = androidx.compose.foundation.lazy.rememberLazyListState()
     LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(32.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        Modifier.fillMaxSize().touchScrollable(tagListState, rememberCoroutineScope()),
+        state = tagListState,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         item {
             Row(
-                Modifier.fillMaxWidth().widthIn(max = 1000.dp),
+                Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                IconButton(onClick = { state.back() }) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "返回")
-                }
-                Box(Modifier.size(16.dp).background(Color(0xFF000000L or tag.color.toLong()), CircleShape))
+                BackButton(onClick = { state.back() })
+                Spacer(Modifier.width(12.dp))
+                Box(Modifier.size(14.dp).background(Color(0xFF000000L or tag.color.toLong()), CircleShape))
+                Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(tag.name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                    Text(tag.name, style = MaterialTheme.typography.headlineMedium)
                     Text(
                         Strings.f("{0} 篇", tagged.size),
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                OutlinedButton(onClick = { state.navigate(Screen.Tags) }) { Text("管理标签") }
+                GlassButton(onClick = { state.navigate(Screen.Tags) }) {
+                    Text("管理标签", style = MaterialTheme.typography.labelMedium)
+                }
             }
         }
 
@@ -322,7 +319,7 @@ fun TagHomeScreen(state: AppState, tagId: Long) {
                         Text(article.title, style = MaterialTheme.typography.titleMedium)
                         Text(
                             buildString {
-                                append("${article.content.length} 字")
+                                append(Strings.f("{0} 字", article.content.length))
                                 if (article.author.isNotBlank()) append(" · ${article.author}")
                             },
                             style = MaterialTheme.typography.bodySmall,

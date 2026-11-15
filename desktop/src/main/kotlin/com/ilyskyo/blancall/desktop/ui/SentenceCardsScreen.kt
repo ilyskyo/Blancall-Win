@@ -2,6 +2,7 @@ package com.ilyskyo.blancall.desktop.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,6 +38,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -120,10 +129,24 @@ fun SentenceCardsScreen(
 
     val items = queue
     val current = items?.getOrNull(index)
+    val currentState = current?.let { states[it.key] }
+    val recallFace = current != null && state.prefs.sentenceClozeEnabled &&
+        SentenceCloze.hidesAnything(current.text) &&
+        ((currentState?.reviewCount ?: 0) > 0 || state.prefs.sentenceClozeNewEnabled)
+    val showFull = revealed || !recallFace
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
 
     fun advance() {
         revealed = false
         if (index + 1 >= items.orEmpty().size) finished = true else index++
+    }
+
+    fun previous() {
+        if (index > 0) {
+            index--
+            revealed = false
+        }
     }
 
     fun rate(rating: FsrsEngine.Rating) {
@@ -137,42 +160,60 @@ fun SentenceCardsScreen(
         advance()
     }
 
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            IconButton(onClick = { state.back() }) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "返回")
-            }
-            Column(Modifier.weight(1f)) {
-                Text("句子卡", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text(
-                    when {
-                        scopeTag != null -> Strings.f("范围：标签「{0}」", scopeTag.name)
-                        articleId != null -> Strings.f("范围：{0}", current?.title ?: scopeArticles.firstOrNull()?.title.orEmpty())
-                        else -> "今日一句 + 到期句 + 新句，评完自动下一张"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (current != null) {
-                Text(
-                    Strings.f("第 {0} / {1} 张", index + 1, items.orEmpty().size),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            TextButton(onClick = {
-                reviewAll = !reviewAll
-                round++
-            }) { Text(if (reviewAll) "结束复习" else "全量复习") }
-            if (current != null && !finished) {
-                TextButton(onClick = { state.navigate(Screen.Reader(current.articleId)) }) { Text("回到原篇") }
-            }
-        }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .focusRequester(focusRequester)
+            .focusable()
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                if (current == null || finished) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.Spacebar -> {
+                        if (showFull) advance() else revealed = true
+                        true
+                    }
+                    Key.DirectionLeft -> {
+                        previous()
+                        true
+                    }
+                    Key.DirectionRight -> {
+                        advance()
+                        true
+                    }
+                    else -> false
+                }
+            },
+    ) {
+        BlancallTopBar(
+            title = "句子卡",
+            subtitle = when {
+                scopeTag != null -> Strings.f("范围：标签「{0}」", scopeTag.name)
+                articleId != null -> Strings.f("范围：{0}", current?.title ?: scopeArticles.firstOrNull()?.title.orEmpty())
+                else -> "今日一句 + 到期句 + 新句，评完自动下一张"
+            },
+            onBack = { state.back() },
+            actions = {
+                if (current != null) {
+                    Text(
+                        Strings.f("第 {0} / {1} 张", index + 1, items.orEmpty().size),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                GlassButton(onClick = {
+                    reviewAll = !reviewAll
+                    round++
+                }) { Text(if (reviewAll) "结束复习" else "全量复习", style = MaterialTheme.typography.labelMedium) }
+                if (current != null && !finished) {
+                    Spacer(Modifier.width(8.dp))
+                    GlassButton(onClick = { state.navigate(Screen.Reader(current.articleId)) }) {
+                        Text("回到原篇", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            },
+        )
 
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 24.dp),

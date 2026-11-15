@@ -31,8 +31,11 @@ class DesktopPrefs(private val file: File) {
     /** 段落首行缩进（与 Android「段落首行缩进」同义） */
     var paragraphIndent by mutableStateOf(true)
         private set
-    /** 阅读背景：default / sepia / gray（C-05） */
-    var backgroundStyle by mutableStateOf("sepia")
+    /** 阅读背景：plain / sepia（C-05）。默认与 Android 一致：米黄关闭、纯白底。 */
+    var backgroundStyle by mutableStateOf("plain")
+        private set
+    /** 界面字体：serif（系统衬线，默认）/ sans（系统黑体）/ xwwk（霞鹜文楷） */
+    var uiFont by mutableStateOf("sans")
         private set
     /** 界面字号缩放 0.85–1.30（C-04） */
     var uiScale by mutableStateOf(1f)
@@ -61,6 +64,9 @@ class DesktopPrefs(private val file: File) {
     /** 强调色序号（与 Android AccentPresets 同一组 6 套） */
     var accentIndex by mutableStateOf(0)
         private set
+    /** 窗口材质：glass（静态平面玻璃，默认）/ mica（Windows 11 标题栏云母，重启生效） */
+    var materialMode by mutableStateOf("glass")
+        private set
 
     init {
         runCatching {
@@ -75,7 +81,8 @@ class DesktopPrefs(private val file: File) {
                 hintsEnabled = p.getProperty("hintsEnabled", "true").toBoolean()
                 reviewTemplateId = p.getProperty("reviewTemplateId", "standard")
                 paragraphIndent = p.getProperty("paragraphIndent", "true").toBoolean()
-                backgroundStyle = p.getProperty("backgroundStyle", "sepia")
+                backgroundStyle = p.getProperty("backgroundStyle", "plain")
+                uiFont = p.getProperty("uiFont", "sans").takeIf { it in setOf("serif", "sans", "xwwk") } ?: "sans"
                 uiScale = p.getProperty("uiScale", "1").toFloatOrNull()?.coerceIn(0.85f, 1.30f) ?: 1f
                 recentArticleIds = p.getProperty("recentArticleIds", "")
                     .split(',')
@@ -91,6 +98,7 @@ class DesktopPrefs(private val file: File) {
                 homeSectionHidden = p.getProperty("homeSectionHidden", "")
                     .split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
                 accentIndex = p.getProperty("accentIndex", "0").toIntOrNull()?.coerceIn(0, 5) ?: 0
+                materialMode = p.getProperty("materialMode", "glass").takeIf { it == "mica" } ?: "glass"
             }
         }
     }
@@ -140,6 +148,11 @@ class DesktopPrefs(private val file: File) {
         save()
     }
 
+    fun updateUiFont(value: String) {
+        uiFont = value.takeIf { it in setOf("serif", "sans", "xwwk") } ?: "sans"
+        save()
+    }
+
     fun updateUiScale(value: Float) {
         uiScale = value.coerceIn(0.85f, 1.30f)
         save()
@@ -147,6 +160,11 @@ class DesktopPrefs(private val file: File) {
 
     fun updateAccentIndex(value: Int) {
         accentIndex = value.coerceIn(0, 5)
+        save()
+    }
+
+    fun updateMaterialMode(value: String) {
+        materialMode = if (value == "mica") "mica" else "glass"
         save()
     }
 
@@ -201,6 +219,9 @@ class DesktopPrefs(private val file: File) {
             p.setProperty("reviewTemplateId", reviewTemplateId)
             p.setProperty("paragraphIndent", paragraphIndent.toString())
             p.setProperty("backgroundStyle", backgroundStyle)
+            p.setProperty("uiFont", uiFont)
+            p.setProperty("accentIndex", accentIndex.toString())
+            p.setProperty("materialMode", materialMode)
             p.setProperty("uiScale", uiScale.toString())
             p.setProperty("recentArticleIds", recentArticleIds.joinToString(","))
             p.setProperty("language", language)

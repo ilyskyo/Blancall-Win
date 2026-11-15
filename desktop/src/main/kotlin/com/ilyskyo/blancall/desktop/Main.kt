@@ -34,10 +34,12 @@ import androidx.compose.ui.window.rememberWindowState
 import com.ilyskyo.blancall.desktop.app.AppState
 import com.ilyskyo.blancall.desktop.app.Screen
 import com.ilyskyo.blancall.desktop.platform.AppPaths
+import com.ilyskyo.blancall.desktop.platform.DeepLink
 import com.ilyskyo.blancall.desktop.platform.SingleInstance
 import com.ilyskyo.blancall.desktop.platform.TextImporter
 import com.ilyskyo.blancall.desktop.platform.TrayController
 import com.ilyskyo.blancall.desktop.platform.WindowGeometry
+import com.ilyskyo.blancall.desktop.platform.WindowsBackdrop
 import com.ilyskyo.blancall.desktop.ui.BlancallApp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -53,17 +55,21 @@ import java.io.File
 import javax.swing.JOptionPane
 import kotlin.math.min
 
-fun main() {
-    if (!SingleInstance.acquire()) {
-        JOptionPane.showMessageDialog(
-            null,
-            "Blancall 已经在运行。请从任务栏或托盘打开已有窗口。",
-            "Blancall",
-            JOptionPane.INFORMATION_MESSAGE,
-        )
+fun main(args: Array<String>) {
+    if (!SingleInstance.acquire(args)) {
+        if (!SingleInstance.lastForwardSucceeded) {
+            JOptionPane.showMessageDialog(
+                null,
+                "Blancall 已经在运行。请从任务栏或托盘打开已有窗口。",
+                "Blancall",
+                JOptionPane.INFORMATION_MESSAGE,
+            )
+        }
         return
     }
-    AppPaths.ensureDirectories()
+    val dirsReady = AppPaths.ensureDirectories()
+    com.ilyskyo.blancall.desktop.platform.DesktopLogging.install()
+    com.ilyskyo.blancall.platform.Log.i("Blancall", "startup: data=${AppPaths.dataDir.absolutePath}")
     Thread.setDefaultUncaughtExceptionHandler { thread, error ->
         runCatching {
             val file = java.io.File(AppPaths.logsDir, "crash-${System.currentTimeMillis()}.log")
@@ -75,6 +81,7 @@ fun main() {
                 }
             )
         }
+        com.ilyskyo.blancall.desktop.platform.DesktopLogging.logCrash(thread, error)
         error.printStackTrace()
     }
     application {
@@ -82,17 +89,26 @@ fun main() {
             AppState(AppPaths.dataDir).also {
                 it.applyReviewTemplate()
                 com.ilyskyo.blancall.desktop.app.Strings.use(it.prefs.language)
+                if (!dirsReady) {
+                    it.reportStorageError(
+                        Strings.f(
+                            "数据目录不可写：{0}。请检查目录权限或安全软件拦截；在恢复前，新增内容不会落盘。",
+                            AppPaths.rootDir.absolutePath,
+                        ),
+                    )
+                }
             }
         }
         val bounds = GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
+        // 1200×800 复现平板横屏比例；小屏按可用区域收窄，但保留手机布局可用的最小宽度
         val targetW = min(1280, (bounds.width - 80).coerceAtLeast(960))
-        val targetH = min(820, (bounds.height - 80).coerceAtLeast(640))
+        val targetH = min(800, (bounds.height - 80).coerceAtLeast(640))
         val savedGeometry = remember { WindowGeometry.load() }
         var showCloseDialog by remember { mutableStateOf(false) }
         var rememberChoice by remember { mutableStateOf(false) }
         var awtWindow by remember { mutableStateOf<java.awt.Window?>(null) }
         val windowState = rememberWindowState(
-            size = DpSize(800.dp, 600.dp),
+            size = DpSize(1280.dp, 800.dp),
             position = WindowPosition(Alignment.Center),
         )
 
@@ -121,9 +137,14 @@ fun main() {
                     event.isCtrlPressed && event.key == Key.Comma -> {
                         state.navigate(Screen.Settings); true
                     }
-                    event.key == Key.Escape && state.canGoBack() -> {
-                        state.back(); true
+                    event.isCtrlPressed && event.key == Key.S -> {
+                        if (!state.handleSave()) {
+                            state.showToast("当前页面没有可保存的编辑")
+                        }
+                        true
                     }
+                    // 面板/弹层优先：AppState 里的 Esc 栈先消费，没人消费才回退导航。
+                    event.key == Key.Escape -> state.handleEscape()
                     event.key == Key.F11 -> {
                         windowState.placement =
                             if (windowState.placement == WindowPlacement.Fullscreen) WindowPlacement.Floating
@@ -138,56 +159,24 @@ fun main() {
             state = windowState,
         ) {
             awtWindow = window
-            MenuBar {
-                Menu("文件") {
-                    Item("导入文章", shortcut = KeyShortcut(Key.N, ctrl = true)) {
-                        state.navigate(Screen.Import)
-                    }
-                    Item("打开文件导入", shortcut = KeyShortcut(Key.O, ctrl = true)) {
-                        state.navigate(Screen.Import)
-                    }
-                    Item("搜索", shortcut = KeyShortcut(Key.F, ctrl = true)) {
-                        state.navigate(Screen.Search)
-                    }
-                    Separator()
-                    Item("设置", shortcut = KeyShortcut(Key.Comma, ctrl = true)) {
+            val tray = remember {
+                TrayController(
+                    window,
+                    onToday = {
+                        window.isVisible = true
+                        window.toFront()
+                        state.navigate(Screen.TodayPlan)
+                    },
+                    onSettings = {
+                        window.isVisible = true
+                        window.toFront()
                         state.navigate(Screen.Settings)
-                    }
-                    Separator()
-                    Item("退出") {
+                    },
+                    onExit = {
                         WindowGeometry.save(window)
                         exitApplication()
-                    }
-                }
-                Menu("查看") {
-                    Item("首页") { state.navigate(Screen.Home) }
-                    Item("文章") { state.navigate(Screen.Articles) }
-                    Item("数据") { state.navigate(Screen.Statistics()) }
-                    Separator()
-                    Item("全屏/退出全屏", shortcut = KeyShortcut(Key.F11)) {
-                        windowState.placement =
-                            if (windowState.placement == WindowPlacement.Fullscreen) WindowPlacement.Floating
-                            else WindowPlacement.Fullscreen
-                    }
-                }
-                Menu("帮助") {
-                    Item("打开数据目录") { openFolder(AppPaths.dataDir) }
-                    Item("打开备份目录") { openFolder(AppPaths.backupsDir) }
-                    Item("打开日志目录") { openFolder(AppPaths.logsDir) }
-                    Separator()
-                    Item("关于 Blancall") {
-                        state.pushNotification(
-                            "Blancall 7.6.1-win.2",
-                            "纯本地、无账号、无网络、无遥测。数据目录 %LOCALAPPDATA%\\Blancall。",
-                        )
-                    }
-                }
-            }
-            val tray = remember {
-                TrayController(window) {
-                    WindowGeometry.save(window)
-                    exitApplication()
-                }
+                    },
+                )
             }
             LaunchedEffect(Unit) {
                 state.notifier = { title, body, _ ->
@@ -195,6 +184,13 @@ fun main() {
                     if (!shown) state.showToast("$title · $body")
                     tray.updateTooltip("Blancall · $title")
                 }
+                SingleInstance.setActivationHandler { forwarded ->
+                    tray.showWindow()
+                    DeepLink.parse(forwarded)?.let { target ->
+                        state.navigate(target)
+                    }
+                }
+                DeepLink.parse(args)?.let { state.navigate(it) }
                 state.reminders.start()
                 withContext(kotlinx.coroutines.Dispatchers.IO) {
                     com.ilyskyo.blancall.desktop.platform.AutoBackup.runIfDue(
@@ -204,10 +200,11 @@ fun main() {
                 }
             }
             LaunchedEffect(Unit) {
-                window.minimumSize = Dimension(900, 600)
+                // 与 ARCHITECTURE §8.2 一致：960×640 以下双栏与详情排版都失去意义。
+                window.minimumSize = Dimension(960, 640)
                 installDropTarget(window, state)
                 if (savedGeometry != null &&
-                    savedGeometry.width >= 900 && savedGeometry.height >= 600 &&
+                    savedGeometry.width >= 960 && savedGeometry.height >= 640 &&
                     savedGeometry.x > -savedGeometry.width && savedGeometry.x < bounds.width &&
                     savedGeometry.y >= 0 && savedGeometry.y < bounds.height
                 ) {
@@ -221,12 +218,66 @@ fun main() {
                     window.setSize(targetW, targetH)
                     window.setLocationRelativeTo(null)
                 }
+                WindowsBackdrop.apply(
+                    window,
+                    enabled = state.prefs.materialMode == "mica",
+                    darkTitleBar = state.prefs.themeMode == "dark",
+                )
             }
             DisposableEffect(Unit) {
                 onDispose {
                     WindowGeometry.save(window)
                     state.reminders.stop()
                     tray.dispose()
+                    SingleInstance.release()
+                }
+            }
+
+            // 原生菜单栏：桌面上「快捷键要有可见入口」，也让文件/视图/帮助可发现。
+            MenuBar {
+                Menu(Strings.t("文件"), mnemonic = 'F') {
+                    Item(Strings.t("导入文章"), shortcut = KeyShortcut(Key.N, ctrl = true)) {
+                        state.navigate(Screen.Import)
+                    }
+                    Item(Strings.t("从文件导入"), shortcut = KeyShortcut(Key.O, ctrl = true)) {
+                        state.navigate(Screen.Import)
+                    }
+                    Item(Strings.t("搜索"), shortcut = KeyShortcut(Key.F, ctrl = true)) {
+                        state.navigate(Screen.Search)
+                    }
+                    Item(Strings.t("今日计划")) { state.navigate(Screen.TodayPlan) }
+                    Item(Strings.t("待复习清单")) { state.navigate(Screen.DueList) }
+                    Item(Strings.t("练习历史")) { state.navigate(Screen.PracticeHistory()) }
+                    Item(Strings.t("错题本")) { state.navigate(Screen.Mistakes()) }
+                    Item(Strings.t("数据互换")) { state.navigate(Screen.DataInterchange) }
+                    Item(Strings.t("设置"), shortcut = KeyShortcut(Key.Comma, ctrl = true)) {
+                        state.navigate(Screen.Settings)
+                    }
+                    Separator()
+                    Item(Strings.t("退出"), shortcut = KeyShortcut(Key.Q, ctrl = true)) {
+                        exitApplication()
+                    }
+                }
+                Menu(Strings.t("视图"), mnemonic = 'V') {
+                    Item(Strings.t("全屏"), shortcut = KeyShortcut(Key.F11)) {
+                        windowState.placement =
+                            if (windowState.placement == WindowPlacement.Fullscreen) {
+                                WindowPlacement.Floating
+                            } else {
+                                WindowPlacement.Fullscreen
+                            }
+                    }
+                    Item(Strings.t("返回"), shortcut = KeyShortcut(Key.Escape)) {
+                        state.handleEscape()
+                    }
+                }
+                Menu(Strings.t("帮助"), mnemonic = 'H') {
+                    Item(Strings.t("使用引导")) { state.navigate(Screen.Guide) }
+                    Item(Strings.t("帮助")) { state.navigate(Screen.Help) }
+                    Item(Strings.t("隐私说明")) { state.navigate(Screen.Privacy) }
+                    Item(Strings.t("欢迎页")) { state.replayWelcome() }
+                    Item(Strings.t("设置")) { state.navigate(Screen.Settings) }
+                    Item(Strings.t("打开数据目录")) { openFolder(AppPaths.dataDir) }
                 }
             }
 
@@ -273,7 +324,10 @@ fun main() {
     }
 }
 
-private val DROP_EXTENSIONS = setOf("txt", "md", "pdf", "docx", "epub", "html", "htm", "rtf")
+private val DROP_TEXT_EXTENSIONS = setOf(
+    "txt", "md", "pdf", "docx", "doc", "epub", "html", "htm", "rtf",
+)
+private const val DROP_ZIP_EXTENSION = "zip"
 
 private fun openFolder(dir: File) {
     runCatching {
@@ -282,7 +336,12 @@ private fun openFolder(dir: File) {
     }
 }
 
-/** 拖拽文件到窗口即导入：与「从文件导入」同一读取器，失败的文件单独计数。 */
+/**
+ * 拖拽文件到窗口即导入：
+ * - 文本类文件走与「从文件导入」相同的读取器；
+ * - `.zip` 若是内容包则导入为素材库，若是备份包则提示到设置页导入（不猜测用户意图）。
+ * 失败的文件单独计数，绝不假装成功。
+ */
 private fun installDropTarget(window: java.awt.Window, state: AppState) {
     val target = DropTarget()
     target.addDropTargetListener(object : DropTargetAdapter() {
@@ -292,16 +351,40 @@ private fun installDropTarget(window: java.awt.Window, state: AppState) {
                 @Suppress("UNCHECKED_CAST")
                 val files = event.transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<File>
                     ?: emptyList()
-                val supported = files.filter { it.isFile && it.extension.lowercase() in DROP_EXTENSIONS }
+                val supported = files.filter {
+                    it.isFile && (it.extension.lowercase() in DROP_TEXT_EXTENSIONS ||
+                        it.extension.lowercase() == DROP_ZIP_EXTENSION)
+                }
                 if (supported.isEmpty()) {
-                    state.showToast("只支持 TXT / Markdown / PDF / DOCX / HTML / RTF 文件")
+                    state.showToast(
+                        "只支持 TXT / Markdown / PDF / DOCX / DOC / EPUB / HTML / RTF / 内容包 ZIP 文件",
+                    )
                     return
                 }
                 state.scope.launch {
                     var count = 0
                     var failed = 0
+                    var packCount = 0
+                    var backupSeen = false
                     var lastId = -1L
                     for (file in supported) {
+                        if (file.extension.lowercase() == DROP_ZIP_EXTENSION) {
+                            if (withContext(Dispatchers.IO) { isBackupZip(file) }) {
+                                backupSeen = true
+                                continue
+                            }
+                            val result = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    state.contentPacks.import(file.inputStream(), file.nameWithoutExtension)
+                                }.getOrNull()
+                            }
+                            if (result is com.ilyskyo.blancall.data.contentpack.ContentPackStore.ImportResult.Success) {
+                                packCount++
+                            } else {
+                                failed++
+                            }
+                            continue
+                        }
                         val text = withContext(Dispatchers.IO) {
                             runCatching { TextImporter.read(file) }.getOrNull()
                         }
@@ -319,21 +402,29 @@ private fun installDropTarget(window: java.awt.Window, state: AppState) {
                         lastId = id
                         count++
                     }
-                    if (count == 0) {
-                        state.showToast("没有可导入的文字")
-                    } else {
-                        state.showToast(
-                            if (failed > 0) {
-                                Strings.f("已导入 {0} 篇，{1} 个文件读取失败", count, failed)
-                            } else {
-                                Strings.f("已导入 {0} 篇", count)
-                            },
-                        )
-                        state.navigate(Screen.Reader(lastId))
+                    if (backupSeen) {
+                        state.showToast("这是备份包，请在 设置 → 内容与数据 中导入备份")
+                    }
+                    when {
+                        count > 0 -> {
+                            state.showToast(
+                                if (failed > 0) {
+                                    Strings.f("已导入 {0} 篇，{1} 个文件读取失败", count, failed)
+                                } else {
+                                    Strings.f("已导入 {0} 篇", count)
+                                },
+                            )
+                            state.navigate(Screen.Reader(lastId))
+                        }
+                        packCount > 0 -> {
+                            state.showToast(Strings.f("已导入 {0} 个内容包", packCount))
+                            state.navigate(Screen.ContentPacks)
+                        }
+                        !backupSeen && failed > 0 -> state.showToast("没有可导入的文字")
                     }
                 }
             } catch (e: Exception) {
-                state.showToast(Strings.f("拖拽导入失败：{0}", e.message))
+                state.reportStorageError("拖拽导入", e)
             } finally {
                 event.dropComplete(true)
             }
@@ -341,3 +432,21 @@ private fun installDropTarget(window: java.awt.Window, state: AppState) {
     })
     runCatching { window.dropTarget = target }
 }
+
+/** 备份 ZIP 与内容包 ZIP 的判别：备份固定有 `manifest.json` + `files/` 前缀。 */
+private fun isBackupZip(file: File): Boolean = runCatching {
+    java.util.zip.ZipInputStream(file.inputStream().buffered()).use { zip ->
+        var hasManifest = false
+        var hasFiles = false
+        var seen = 0
+        var entry = zip.nextEntry
+        while (entry != null && seen < 500 && !(hasManifest && hasFiles)) {
+            val name = entry.name.replace('\\', '/')
+            if (name == "manifest.json") hasManifest = true
+            if (name.startsWith("files/")) hasFiles = true
+            seen++
+            entry = zip.nextEntry
+        }
+        hasManifest && hasFiles
+    }
+}.getOrDefault(false)

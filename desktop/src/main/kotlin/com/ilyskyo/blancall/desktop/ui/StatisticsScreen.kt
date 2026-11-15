@@ -1,12 +1,14 @@
-﻿package com.ilyskyo.blancall.desktop.ui
+package com.ilyskyo.blancall.desktop.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -79,8 +81,17 @@ fun StatisticsScreen(state: AppState, articleId: Long?) {
     val records by state.records.records.collectAsState(initial = emptyList())
     val revision by state.fsrs.revision.collectAsState()
     val article = articleId?.let { id -> articles.firstOrNull { it.id == id } }
-    val scoped = remember(records, articleId) {
-        if (articleId == null) records else records.filter { it.articleId == articleId }
+    var fromDay by remember { mutableStateOf(0L) }
+    var toDay by remember { mutableStateOf(0L) }
+    val scoped = remember(records, articleId, fromDay, toDay) {
+        records.asSequence()
+            .filter { articleId == null || it.articleId == articleId }
+            .filter { record ->
+                val day = Instant.ofEpochMilli(record.timestamp)
+                    .atZone(ZoneId.systemDefault()).toLocalDate().toEpochDay()
+                (fromDay <= 0L || day >= fromDay) && (toDay <= 0L || day <= toDay)
+            }
+            .toList()
     }
     val totalBlanks = scoped.sumOf { it.totalBlanks }
     val totalCorrect = scoped.sumOf { it.correctCount }
@@ -104,8 +115,11 @@ fun StatisticsScreen(state: AppState, articleId: Long?) {
         }
     }
 
+    val statsListState = androidx.compose.foundation.lazy.rememberLazyListState()
+    Box(Modifier.fillMaxSize()) {
     LazyColumn(
-        Modifier.fillMaxSize(),
+        Modifier.fillMaxSize().touchScrollable(statsListState, scope),
+        state = statsListState,
         contentPadding = androidx.compose.foundation.layout.PaddingValues(32.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -117,34 +131,36 @@ fun StatisticsScreen(state: AppState, articleId: Long?) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (articleId != null) {
-                    IconButton(onClick = { state.back() }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "返回")
-                    }
+                    BackButton(onClick = { state.back() })
+                    Spacer(Modifier.width(12.dp))
                 }
                 Column(Modifier.weight(1f)) {
                     Text(
                         if (article == null) "数据" else Strings.f("《{0}》统计", article.title),
                         style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
                     )
                     Text(
                         if (articleId == null) "全局练习记录与记忆状态"
                         else Strings.f("{0} 次练习", scoped.size),
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 if (articleId != null) {
-                    TextButton(onClick = { state.navigate(Screen.Reader(articleId)) }) { Text("返回阅读") }
+                    GlassButton(onClick = { state.navigate(Screen.Reader(articleId)) }) {
+                        Text("返回阅读", style = MaterialTheme.typography.labelMedium)
+                    }
                 } else {
-                    TextButton(onClick = { state.navigate(Screen.Articles) }) { Text("文章列表") }
+                    GlassButton(onClick = { state.navigate(Screen.Articles) }) {
+                        Text("文章列表", style = MaterialTheme.typography.labelMedium)
+                    }
                 }
-                OutlinedButton(
+                GlassButton(
                     onClick = {
                         val target = FileDialogs.save(
                             "导出分享图",
                             "blancall_stats_${LocalDate.now()}.png",
-                        ) ?: return@OutlinedButton
+                        ) ?: return@GlassButton
                         scope.launch {
                             runCatching {
                                 withContext(Dispatchers.IO) {
@@ -171,12 +187,12 @@ fun StatisticsScreen(state: AppState, articleId: Long?) {
                         }
                     },
                 ) { Text("导出分享图") }
-                OutlinedButton(
+                GlassButton(
                     onClick = {
                         val target = FileDialogs.save(
                             "导出练习记录",
                             "blancall_records_${LocalDate.now()}.csv",
-                        ) ?: return@OutlinedButton
+                        ) ?: return@GlassButton
                         scope.launch {
                             runCatching {
                                 withContext(Dispatchers.IO) {
@@ -197,6 +213,41 @@ fun StatisticsScreen(state: AppState, articleId: Long?) {
                 StatBlock("填空正确率", if (totalBlanks == 0) "—" else percent(accuracy), Modifier.weight(1f))
                 StatBlock("今日待复习", dueCount.toString(), Modifier.weight(1f))
                 StatBlock("连续学习", Strings.f("{0} 天", state.reminderPrefs.studyStreakDays), Modifier.weight(1f))
+            }
+        }
+
+        item {
+            GlassCard(
+                Modifier.fillMaxWidth().widthIn(max = 1100.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text("统计范围", style = MaterialTheme.typography.labelSmall)
+                    GlassDateField(epochDay = fromDay, onSelect = { fromDay = it })
+                    Text("至", style = MaterialTheme.typography.labelSmall)
+                    GlassDateField(epochDay = toDay, onSelect = { toDay = it })
+                    Spacer(Modifier.weight(1f))
+                    if (fromDay > 0L || toDay > 0L) {
+                        GlassButton(onClick = { fromDay = 0L; toDay = 0L }) {
+                            Text("清除范围", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                    GlassButton(onClick = { state.navigate(Screen.PracticeHistory(articleId)) }) {
+                        Text("练习历史", style = MaterialTheme.typography.labelMedium)
+                    }
+                    GlassButton(onClick = { state.navigate(Screen.Mistakes(articleId)) }) {
+                        Text("错题本", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+                Text(
+                    "日期范围只影响本页的聚合；练习历史页可按文章、模式、错题与日期进一步筛选。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 
@@ -443,8 +494,13 @@ fun StatisticsScreen(state: AppState, articleId: Long?) {
                     mistakes.count { !it.resolved },
                 ),
                 trailing = {
-                    TextButton(onClick = { onlyUnresolved = !onlyUnresolved }) {
-                        Text(if (onlyUnresolved) "显示全部" else "只看未攻克")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { onlyUnresolved = !onlyUnresolved }) {
+                            Text(if (onlyUnresolved) "显示全部" else "只看未攻克")
+                        }
+                        GlassButton(onClick = { state.navigate(Screen.Mistakes(articleId)) }) {
+                            Text("打开错题本", style = MaterialTheme.typography.labelMedium)
+                        }
                     }
                 },
             ) {
@@ -487,7 +543,15 @@ fun StatisticsScreen(state: AppState, articleId: Long?) {
         }
 
         item {
-            SectionCard(title = "练习记录", subtitle = Strings.f("最近 {0} 条", minOf(scoped.size, 20))) {
+            SectionCard(
+                title = "练习记录",
+                subtitle = Strings.f("最近 {0} 条", minOf(scoped.size, 20)),
+                trailing = {
+                    GlassButton(onClick = { state.navigate(Screen.PracticeHistory(articleId)) }) {
+                        Text("全部记录", style = MaterialTheme.typography.labelMedium)
+                    }
+                },
+            ) {
                 if (scoped.isEmpty()) {
                     EmptyState("还没有练习记录", "完成一次练习后，这里会出现记录与正确率。")
                 } else {
@@ -534,6 +598,14 @@ fun StatisticsScreen(state: AppState, articleId: Long?) {
             }
         }
         item { Spacer(Modifier.padding(bottom = 32.dp)) }
+    }
+        DesktopScrollbar(
+            statsListState,
+            Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(top = 16.dp, bottom = 16.dp, end = 6.dp),
+        )
     }
 
     crossDetail?.let { record ->

@@ -72,31 +72,20 @@ fun CrossPracticeScreen(state: AppState, articleIds: List<Long>) {
     val scope = rememberCoroutineScope()
 
     Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            IconButton(onClick = { state.back() }) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "返回")
-            }
-            Column(Modifier.weight(1f)) {
-                Text("跨文练习", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text(
-                    Strings.f(
-                        "{0} 篇 · {1} 空 · 结果会按来源文章分别写回 FSRS",
-                        selected.size,
-                        questions.size,
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (submitted) {
-                Button(onClick = { state.navigate(Screen.CrossPractice(articleIds)) }) { Text("再练一次") }
-            }
-            TextButton(onClick = { state.navigate(Screen.Articles) }) { Text("返回列表") }
-        }
+        BlancallTopBar(
+            title = "跨文练习",
+            subtitle = Strings.f(
+                "{0} 篇 · {1} 空 · 结果会按来源文章分别写回 FSRS",
+                selected.size,
+                questions.size,
+            ),
+            onBack = { state.back() },
+            actions = {
+                if (submitted) {
+                    PrimaryPill("再练一次", onClick = { state.navigate(Screen.CrossPractice(articleIds)) })
+                }
+            },
+        )
 
         if (questions.isEmpty()) {
             Column(
@@ -110,8 +99,10 @@ fun CrossPracticeScreen(state: AppState, articleIds: List<Long>) {
             return@Column
         }
 
+        val crossListState = androidx.compose.foundation.lazy.rememberLazyListState()
         LazyColumn(
-            Modifier.fillMaxSize(),
+            Modifier.fillMaxSize().touchScrollable(crossListState, scope),
+            state = crossListState,
             contentPadding = androidx.compose.foundation.layout.PaddingValues(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,

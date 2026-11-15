@@ -341,19 +341,20 @@ class FsrsStateStore private constructor(private val file: File) {
         .put("reviewCount", s.reviewCount).put("lapses", s.lapses)
         .put("lastRating", s.lastRating)
 
-    private fun persist() {
+    /** @return false = 本次没有落盘；调用方必须撤回内存变更，避免「重启后消失」的假状态。 */
+    private fun persist(): Boolean {
         try {
             if (fromNewerVersion) {
                 // 盘上那份是更高版本写的：本版本不认识它的字段，整本重写会把那些字段抹平。
                 // 宁可停在「这次没存上」并留下日志，也不要静默改数据 —— 升级回来原文件还是完整的
                 Log.e("FsrsStateStore", "磁盘格式版本高于本应用，拒绝写盘（内存状态仍可用，退出后不保留）")
-                return
+                return false
             }
             if (loadFailed) {
                 // 主文件与备份都读不出来：此时内存是空表，写下去就是用空表覆盖整库记忆状态。
                 // 宁可这一次不存，等用户从"一键备份"恢复或修好文件。
                 Log.e("FsrsStateStore", "load failed; refusing to persist to protect existing data")
-                return
+                return false
             }
             file.parentFile?.mkdirs()
             val json = JSONObject().put(VERSION_KEY, CURRENT_VERSION)
@@ -383,8 +384,10 @@ class FsrsStateStore private constructor(private val file: File) {
             }
             // 原子写 + fsync + 备份轮换统一到 AtomicFiles（tmp → fsync → .bak → rename → 目录 fsync）
             AtomicFiles.writeTextAtomic(file, json.toString())
+            return true
         } catch (e: Exception) {
             Log.e("FsrsStateStore", "保存 FSRS 状态失败", e)
+            return false
         }
     }
 
@@ -411,10 +414,14 @@ class FsrsStateStore private constructor(private val file: File) {
         loadLatch.await()
         synchronized(persistLock) {
             if (loadFailed || fromNewerVersion) return null
-            val previous = states[articleId] ?: FsrsEngine.CardState()
+            val existing = states[articleId]
+            val previous = existing ?: FsrsEngine.CardState()
             val next = transform(previous)
             states[articleId] = next
-            persist()
+            if (!persist()) {
+                if (existing == null) states.remove(articleId) else states[articleId] = existing
+                return null
+            }
             bumpRevision()
             return previous to next
         }
@@ -425,8 +432,12 @@ class FsrsStateStore private constructor(private val file: File) {
         loadLatch.await()
         // 改 map 与落盘整体串行，避免并发 save 互相覆盖（见 persistLock 注释）
         synchronized(persistLock) {
+            val previous = states[articleId]
             states[articleId] = state
-            persist()
+            if (!persist()) {
+                if (previous == null) states.remove(articleId) else states[articleId] = previous
+                return
+            }
             bumpRevision()
         }
     }
@@ -435,13 +446,18 @@ class FsrsStateStore private constructor(private val file: File) {
     fun remove(articleId: Long) {
         loadLatch.await()
         synchronized(persistLock) {
-            val hadState = states.remove(articleId) != null
-            val hadPause = pausedArticles.remove(articleId) != null
+            val oldState = states.remove(articleId)
+            val oldPause = pausedArticles.remove(articleId)
             // 计划成员也要跟着走：文章都没了，成员表里留着就是一个永远点不开的任务
-            val hadEnrolled = enrolledArticles.remove(articleId) != null
-            if (hadState || hadPause || hadEnrolled) {
-                persist()
-                bumpRevision()
+            val oldEnrolled = enrolledArticles.remove(articleId)
+            if (oldState != null || oldPause != null || oldEnrolled != null) {
+                if (!persist()) {
+                    oldState?.let { states[articleId] = it }
+                    oldPause?.let { pausedArticles[articleId] = it }
+                    oldEnrolled?.let { enrolledArticles[articleId] = it }
+                } else {
+                    bumpRevision()
+                }
             }
         }
     }
@@ -480,7 +496,10 @@ class FsrsStateStore private constructor(private val file: File) {
         synchronized(persistLock) {
             if (isInPlan(articleId)) return false
             enrolledArticles[articleId] = now.coerceAtLeast(0L)
-            persist()
+            if (!persist()) {
+                enrolledArticles.remove(articleId)
+                return false
+            }
             bumpRevision()
             return true
         }
@@ -493,8 +512,11 @@ class FsrsStateStore private constructor(private val file: File) {
     fun unenroll(articleId: Long): Boolean {
         loadLatch.await()
         synchronized(persistLock) {
-            if (enrolledArticles.remove(articleId) == null) return false
-            persist()
+            val previous = enrolledArticles.remove(articleId) ?: return false
+            if (!persist()) {
+                enrolledArticles[articleId] = previous
+                return false
+            }
             bumpRevision()
             return true
         }
@@ -530,7 +552,10 @@ class FsrsStateStore private constructor(private val file: File) {
             } else {
                 StudyFlow.Pause(pausedAt = now, remainingMs = 0L)
             }
-            persist()
+            if (!persist()) {
+                pausedArticles.remove(articleId)
+                return false
+            }
             bumpRevision()
             return true
         }
@@ -545,15 +570,24 @@ class FsrsStateStore private constructor(private val file: File) {
         loadLatch.await()
         synchronized(persistLock) {
             val pause = pausedArticles.remove(articleId) ?: return false
-            val state = states[articleId]
-            if (state != null) {
-                states[articleId] = state.copy(due = StudyFlow.resumedDue(state, pause, now))
+            val oldState = states[articleId]
+            val oldEnrolled = enrolledArticles[articleId]
+            val oldSentences = sentenceKeysForArticle(articleId).associateWith { sentenceStates.getValue(it) }
+            if (oldState != null) {
+                states[articleId] = oldState.copy(due = StudyFlow.resumedDue(oldState, pause, now))
             } else if (pause.fixedDue > 0L) {
                 enrolledArticles[articleId] = pause.fixedDue.coerceAtLeast(now)
             }
             // 暂停是文章组操作：句级卡不能独立于篇级继续计时，否则恢复当天会集体爆到期。
             resumeSentences(articleId, pause, now)
-            persist()
+            if (!persist()) {
+                pausedArticles[articleId] = pause
+                if (oldState == null) states.remove(articleId) else states[articleId] = oldState
+                if (oldEnrolled == null) enrolledArticles.remove(articleId) else enrolledArticles[articleId] = oldEnrolled
+                sentenceKeysForArticle(articleId).forEach { sentenceStates.remove(it) }
+                oldSentences.forEach { (key, state) -> sentenceStates[key] = state }
+                return false
+            }
             bumpRevision()
             return true
         }
@@ -575,6 +609,17 @@ class FsrsStateStore private constructor(private val file: File) {
         synchronized(persistLock) {
             val target = due.coerceAtLeast(0L)
             val state = states[articleId]
+            val oldPause = pausedArticles[articleId]
+            val oldEnrolled = enrolledArticles[articleId]
+            val oldSentences = sentenceKeysForArticle(articleId).associateWith { sentenceStates.getValue(it) }
+            fun rollback(): Boolean {
+                if (state == null) states.remove(articleId) else states[articleId] = state
+                if (oldPause == null) pausedArticles.remove(articleId) else pausedArticles[articleId] = oldPause
+                if (oldEnrolled == null) enrolledArticles.remove(articleId) else enrolledArticles[articleId] = oldEnrolled
+                sentenceKeysForArticle(articleId).forEach { sentenceStates.remove(it) }
+                oldSentences.forEach { (key, value) -> sentenceStates[key] = value }
+                return false
+            }
             if (state == null || state.reviewCount <= 0) {
                 // 没有篇级卡的两类成员：主动加入计划的（到期 = 加入时刻），
                 // 以及只写过句级状态的（跨文练习/投影）。两者都必须能改期。
@@ -590,7 +635,7 @@ class FsrsStateStore private constructor(private val file: File) {
                         fixedDue = target,
                     )
                 }
-                persist()
+                if (!persist()) return rollback()
                 bumpRevision()
                 return true
             }
@@ -611,7 +656,7 @@ class FsrsStateStore private constructor(private val file: File) {
                 // 篇级改期必须同时作用到句子组，否则投影口径下这次操作对到期清单完全无效。
                 rescheduleSentences(articleId, target)
             }
-            persist()
+            if (!persist()) return rollback()
             bumpRevision()
             return true
         }
@@ -665,6 +710,10 @@ class FsrsStateStore private constructor(private val file: File) {
         if (snapshots.isEmpty()) return false
         loadLatch.await()
         synchronized(persistLock) {
+            val backupStates = states.toMap()
+            val backupPaused = pausedArticles.toMap()
+            val backupEnrolled = enrolledArticles.toMap()
+            val backupSentences = sentenceStates.toMap()
             snapshots.forEach { snap ->
                 val before = snap.state
                 if (before == null) states.remove(snap.articleId) else states[snap.articleId] = before.copy()
@@ -679,7 +728,13 @@ class FsrsStateStore private constructor(private val file: File) {
                     sentenceStates[key] = state.copy()
                 }
             }
-            persist()
+            if (!persist()) {
+                states.clear(); states.putAll(backupStates)
+                pausedArticles.clear(); pausedArticles.putAll(backupPaused)
+                enrolledArticles.clear(); enrolledArticles.putAll(backupEnrolled)
+                sentenceStates.clear(); sentenceStates.putAll(backupSentences)
+                return false
+            }
             bumpRevision()
             return true
         }
@@ -726,10 +781,14 @@ class FsrsStateStore private constructor(private val file: File) {
         loadLatch.await()
         synchronized(persistLock) {
             if (loadFailed || fromNewerVersion) return null
-            val previous = sentenceStates[key] ?: FsrsEngine.CardState()
+            val existing = sentenceStates[key]
+            val previous = existing ?: FsrsEngine.CardState()
             val next = transform(previous)
             sentenceStates[key] = next
-            persist()
+            if (!persist()) {
+                if (existing == null) sentenceStates.remove(key) else sentenceStates[key] = existing
+                return null
+            }
             bumpRevision()
             return SentenceTransition(key, previous.copy(), next.copy())
         }
@@ -749,6 +808,9 @@ class FsrsStateStore private constructor(private val file: File) {
         loadLatch.await()
         synchronized(persistLock) {
             if (loadFailed || fromNewerVersion) return emptyList()
+            val previousStates = transforms.keys
+                .filter { isSentenceKey(it) }
+                .associateWith { sentenceStates[it] }
             val transitions = ArrayList<SentenceTransition>(transforms.size)
             for ((key, transform) in transforms) {
                 if (!isSentenceKey(key)) continue
@@ -758,7 +820,12 @@ class FsrsStateStore private constructor(private val file: File) {
                 transitions += SentenceTransition(key, previous.copy(), next.copy())
             }
             if (transitions.isEmpty()) return emptyList()
-            persist()
+            if (!persist()) {
+                previousStates.forEach { (key, state) ->
+                    if (state == null) sentenceStates.remove(key) else sentenceStates[key] = state
+                }
+                return emptyList()
+            }
             bumpRevision()
             return transitions
         }
@@ -769,8 +836,12 @@ class FsrsStateStore private constructor(private val file: File) {
         if (!isSentenceKey(key)) return
         loadLatch.await()
         synchronized(persistLock) {
+            val previous = sentenceStates[key]
             sentenceStates[key] = state
-            persist()
+            if (!persist()) {
+                if (previous == null) sentenceStates.remove(key) else sentenceStates[key] = previous
+                return
+            }
             bumpRevision()
         }
     }
@@ -785,15 +856,17 @@ class FsrsStateStore private constructor(private val file: File) {
         if (updates.isEmpty()) return
         loadLatch.await()
         synchronized(persistLock) {
-            var changed = false
+            val previous = updates.keys.filter { isSentenceKey(it) }.associateWith { sentenceStates[it] }
+            if (previous.isEmpty()) return
             updates.forEach { (key, state) ->
-                if (isSentenceKey(key)) {
-                    sentenceStates[key] = state
-                    changed = true
-                }
+                if (isSentenceKey(key)) sentenceStates[key] = state
             }
-            if (!changed) return
-            persist()
+            if (!persist()) {
+                previous.forEach { (key, state) ->
+                    if (state == null) sentenceStates.remove(key) else sentenceStates[key] = state
+                }
+                return
+            }
             bumpRevision()
         }
     }
@@ -805,8 +878,12 @@ class FsrsStateStore private constructor(private val file: File) {
             val prefix = "$SENTENCE_KEY_PREFIX$articleId:"
             val removed = sentenceStates.keys.filter { it.startsWith(prefix) }
             if (removed.isEmpty()) return
+            val backup = removed.associateWith { sentenceStates.getValue(it) }
             removed.forEach { sentenceStates.remove(it) }
-            persist()
+            if (!persist()) {
+                backup.forEach { (key, state) -> sentenceStates[key] = state }
+                return
+            }
             bumpRevision()
         }
     }
@@ -826,9 +903,13 @@ class FsrsStateStore private constructor(private val file: File) {
         if (keys.isEmpty()) return 0
         loadLatch.await()
         synchronized(persistLock) {
+            val backup = keys.mapNotNull { key -> sentenceStates[key]?.let { key to it } }.toMap()
             val removed = keys.count { sentenceStates.remove(it) != null }
             if (removed > 0) {
-                persist()
+                if (!persist()) {
+                    backup.forEach { (key, state) -> sentenceStates[key] = state }
+                    return 0
+                }
                 bumpRevision()
             }
             return removed
